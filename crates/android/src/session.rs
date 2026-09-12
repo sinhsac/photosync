@@ -125,17 +125,39 @@ pub fn scan_library(db_path: &str) -> String {
     let outcome = (|| -> Result<(usize, usize), String> {
         let conn = db::open(db_path).map_err(|e| e.to_string())?;
 
+        // Ask MediaStore how many assets it has *before* walking it, so the log can
+        // compare the two. §1 promises the whole library, and "catalogued 3221" only
+        // means something next to "MediaStore reports 3221".
+        let expected = match crate::store::count() {
+            Ok((images, videos)) => {
+                log::line(format!("library holds {images} images and {videos} videos"));
+                Some(images + videos)
+            }
+            Err(e) => {
+                log::line(format!("cannot count the library: {e}"));
+                None
+            }
+        };
+
         const PAGE: i32 = 500;
-        let mut offset = 0i32;
+        let mut after_image = crate::store::NO_WATERMARK;
+        let mut after_video = crate::store::NO_WATERMARK;
         let mut catalogued = 0usize;
 
         loop {
-            let rows = crate::store::enumerate(PAGE, offset).map_err(|e| e.to_string())?;
+            let page = crate::store::enumerate(PAGE, after_image, after_video)
+                .map_err(|e| e.to_string())?;
+            let rows = &page.rows;
             if rows.is_empty() {
                 break;
             }
+            // Advance before the insert loop: a watermark that only moves on success
+            // would replay the same page forever if one row failed.
+            after_image = page.after_image_id;
+            after_video = page.after_video_id;
+
             conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
-            for row in &rows {
+            for row in rows {
                 let asset = catalog::ScannedAsset {
                     platform_asset_id: row.id.clone(),
                     size: row.size,
@@ -159,9 +181,21 @@ pub fn scan_library(db_path: &str) -> String {
             }
             conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
             log::line(format!("catalogued {catalogued} assets so far"));
-            offset += rows.len() as i32;
             if rows.len() < PAGE as usize {
                 break;
+            }
+        }
+
+        // A mismatch is not fatal — zero-byte rows are dropped on purpose, so a small
+        // shortfall is expected — but it must be visible. Silently cataloguing fewer
+        // assets than the library holds is the one failure this app cannot afford to
+        // look like success.
+        if let Some(expected) = expected {
+            if (catalogued as u64) != expected {
+                log::line(format!(
+                    "note: MediaStore reported {expected} assets, catalogued {catalogued} \
+                     (zero-byte and unreadable rows are skipped)"
+                ));
             }
         }
 

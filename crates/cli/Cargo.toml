@@ -1,0 +1,17 @@
+[package]
+name = "photosync-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The binary is `photosync`, not `photosync-cli`. It is the thing a user runs.
+[[bin]]
+name = "photosync"
+path = "src/main.rs"
+
+[dependencies]
+photosync-core = { path = "../core" }
+photosync-net = { path = "../net" }
+rusqlite.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }

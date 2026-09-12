@@ -407,7 +407,7 @@ where
 
             Message::AssetBegin { descriptor, .. } => {
                 let quick = descriptor.quick_hash;
-                let (staging_ref, staging) = sink.staging(&quick)?;
+                let (staging_ref, staging) = sink.staging(&descriptor)?;
                 let state = inbound::open(conn, &sess.id, &quick, &staging_ref, descriptor.size)?;
 
                 // Rebuilding the digest re-reads the whole partial from disk and

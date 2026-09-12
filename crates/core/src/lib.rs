@@ -12,6 +12,7 @@ pub mod bringup;
 pub mod catalog;
 pub mod chunk;
 pub mod db;
+pub mod dirstore;
 pub mod error;
 pub mod identity;
 pub mod inbound;

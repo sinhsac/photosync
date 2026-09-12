@@ -39,7 +39,7 @@
 use crate::jvm;
 use jni::objects::{JObject, JString, JValue};
 use jni::JNIEnv;
-use photosync_core::model::{AssetDescriptor, Hash32, MediaType};
+use photosync_core::model::{AssetDescriptor, MediaType};
 use photosync_core::provider::{LibrarySink, LibrarySource, ReadSeek, StagingFile};
 use std::io;
 use std::os::fd::FromRawFd;
@@ -48,6 +48,47 @@ use std::os::fd::FromRawFd;
 /// traits speak.
 fn jni_err(what: &str, e: impl std::fmt::Display) -> io::Error {
     io::Error::other(format!("{what}: {e}"))
+}
+
+/// Converts a failed helper call into an `io::Error`, clearing any pending Java
+/// exception first.
+///
+/// # Why clearing is mandatory
+///
+/// A thrown Java exception stays *pending* on the thread until something clears it.
+/// jni-rs reports the call as `Err`, so Rust code that only maps the error looks
+/// correct — but the exception is still armed, and the next JNI call on that thread
+/// aborts the process. In practice the abort surfaces far from the cause: MediaStore
+/// rejects one asset, and the app dies several calls later with a stack trace
+/// pointing at whatever ran next.
+///
+/// The message is read out before clearing, because it is the only description of
+/// what MediaStore actually objected to.
+fn helper_failed(env: &mut JNIEnv, method: &str, e: jni::errors::Error) -> io::Error {
+    let mut detail = String::new();
+    if matches!(env.exception_check(), Ok(true)) {
+        if let Ok(thrown) = env.exception_occurred() {
+            // Must clear before calling back into Java, otherwise `getMessage`
+            // itself is an illegal call with an exception pending.
+            let _ = env.exception_clear();
+            if let Ok(msg) = env.call_method(&thrown, "getMessage", "()Ljava/lang/String;", &[]) {
+                if let Ok(obj) = msg.l() {
+                    if !obj.is_null() {
+                        if let Ok(s) = env.get_string(&JString::from(obj)) {
+                            detail = s.into();
+                        }
+                    }
+                }
+            }
+        } else {
+            let _ = env.exception_clear();
+        }
+    }
+    if detail.is_empty() {
+        jni_err(method, e)
+    } else {
+        io::Error::other(format!("{method}: {detail}"))
+    }
 }
 
 /// Reads a `String` returned by a static helper method.
@@ -96,7 +137,10 @@ fn file_from_fd(fd: i32) -> io::Result<std::fs::File> {
 pub struct MediaStoreSink;
 
 impl LibrarySink for MediaStoreSink {
-    fn staging(&self, key: &Hash32) -> io::Result<(String, Box<dyn StagingFile + Send>)> {
+    fn staging(
+        &self,
+        descriptor: &AssetDescriptor,
+    ) -> io::Result<(String, Box<dyn StagingFile + Send>)> {
         let mut guard = jvm::attach().map_err(|e| jni_err("attach", e))?;
         let env = &mut *guard;
         let ctx = jvm::context().map_err(|e| jni_err("context", e))?;
@@ -106,22 +150,57 @@ impl LibrarySink for MediaStoreSink {
         // Named by content key so a restart reopens the same pending item, which
         // is what resume across a process death depends on (§13.4).
         //
-        // The display name is provisional. `commit` renames it to the real one,
-        // because the descriptor is only known after ASSET_BEGIN and MediaStore
-        // wants a name at insert time.
-        let name = env
-            .new_string(format!("psync-{}.tmp", key.to_hex()))
-            .map_err(|e| jni_err("new_string", e))?;
+        // The display name is provisional — `commit` sets the real one. The MIME
+        // type and the collection are not: MediaStore fixes both at insert time and
+        // rejects any later attempt to change them, which is why the descriptor is
+        // needed here rather than only in `commit`.
+        let provisional = format!("psync-{}.tmp", descriptor.quick_hash.to_hex());
+        let is_video = u8::from(descriptor.media_type == MediaType::Video);
 
-        let out = env
+        // Reopen before inserting. The trait promises that the same key returns the
+        // same bytes, and inserting unconditionally breaks that promise in a way that
+        // is invisible until a resumed transfer produces a corrupt file: the engine
+        // reads `bytes_received` from the database and seeks that far into a brand new
+        // empty row, so the skipped range is whatever the filesystem left there.
+        let name = env
+            .new_string(&provisional)
+            .map_err(|e| jni_err("new_string", e))?;
+        let existing = env
             .call_static_method(
                 &class,
-                "createPending",
-                "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
-                &[JValue::Object(&ctx_obj), JValue::Object(&name)],
+                "findPending",
+                "(Landroid/content/Context;Ljava/lang/String;Z)Ljava/lang/String;",
+                &[
+                    JValue::Object(&ctx_obj),
+                    JValue::Object(&name),
+                    JValue::Bool(is_video),
+                ],
             )
-            .map_err(|e| jni_err("createPending", e))?;
-        let uri = take_string(env, "createPending", out)?;
+            .map_err(|e| helper_failed(env, "findPending", e))?;
+        let existing = take_string(env, "findPending", existing)?;
+
+        let uri = if existing.is_empty() {
+            let mime = env
+                .new_string(&descriptor.mime)
+                .map_err(|e| jni_err("new_string", e))?;
+            let out = env
+                .call_static_method(
+                    &class,
+                    "createPending",
+                    "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Z)\
+                     Ljava/lang/String;",
+                    &[
+                        JValue::Object(&ctx_obj),
+                        JValue::Object(&name),
+                        JValue::Object(&mime),
+                        JValue::Bool(is_video),
+                    ],
+                )
+                .map_err(|e| helper_failed(env, "createPending", e))?;
+            take_string(env, "createPending", out)?
+        } else {
+            existing
+        };
 
         let juri = env.new_string(&uri).map_err(|e| jni_err("new_string", e))?;
         let fd = env
@@ -131,7 +210,7 @@ impl LibrarySink for MediaStoreSink {
                 "(Landroid/content/Context;Ljava/lang/String;)I",
                 &[JValue::Object(&ctx_obj), JValue::Object(&juri)],
             )
-            .map_err(|e| jni_err("openPendingFd", e))?
+            .map_err(|e| helper_failed(env, "openPendingFd", e))?
             .i()
             .map_err(|e| jni_err("openPendingFd", e))?;
 
@@ -177,7 +256,7 @@ impl LibrarySink for MediaStoreSink {
                     JValue::Bool(u8::from(descriptor.media_type == MediaType::Video)),
                 ],
             )
-            .map_err(|e| jni_err("publish", e))?;
+            .map_err(|e| helper_failed(env, "publish", e))?;
         take_string(env, "publish", out)
     }
 
@@ -198,7 +277,7 @@ impl LibrarySink for MediaStoreSink {
             "(Landroid/content/Context;Ljava/lang/String;)V",
             &[JValue::Object(&ctx_obj), JValue::Object(&juri)],
         )
-        .map_err(|e| jni_err("abandon", e))?;
+        .map_err(|e| helper_failed(env, "abandon", e))?;
         Ok(())
     }
 }
@@ -278,7 +357,7 @@ impl LibrarySource for MediaStoreSource {
                 "(Landroid/content/Context;Ljava/lang/String;)I",
                 &[JValue::Object(&ctx_obj), JValue::Object(&jid)],
             )
-            .map_err(|e| jni_err("openOriginalFd", e))?
+            .map_err(|e| helper_failed(env, "openOriginalFd", e))?
             .i()
             .map_err(|e| jni_err("openOriginalFd", e))?;
 
@@ -302,13 +381,63 @@ pub struct ScannedRow {
     pub video: bool,
 }
 
-/// Enumerates images and videos (§10.3).
+/// "Start from the beginning" for [`enumerate`].
+pub const NO_WATERMARK: i64 = -1;
+
+/// One page of the library, plus where the next page starts.
+#[derive(Debug, serde::Deserialize)]
+pub struct ScanPage {
+    pub rows: Vec<ScannedRow>,
+    /// Highest image `_ID` seen. Feed back in to continue.
+    #[serde(rename = "afterImageId")]
+    pub after_image_id: i64,
+    /// Highest video `_ID` seen.
+    #[serde(rename = "afterVideoId")]
+    pub after_video_id: i64,
+}
+
+/// How many assets MediaStore holds: `(images, videos)`.
+///
+/// Used to state a total next to the catalogued count, so a scan that quietly
+/// missed something does not read as a success (§1).
+pub fn count() -> io::Result<(u64, u64)> {
+    let mut guard = jvm::attach().map_err(|e| jni_err("attach", e))?;
+    let env = &mut *guard;
+    let ctx = jvm::context().map_err(|e| jni_err("context", e))?;
+    let ctx_obj = unsafe { JObject::from_raw(ctx.as_raw()) };
+    let class = jvm::helper_class().map_err(|e| jni_err("helper class", e))?;
+
+    let out = env
+        .call_static_method(
+            &class,
+            "count",
+            "(Landroid/content/Context;)Ljava/lang/String;",
+            &[JValue::Object(&ctx_obj)],
+        )
+        .map_err(|e| helper_failed(env, "count", e))?;
+    let json = take_string(env, "count", out)?;
+
+    #[derive(serde::Deserialize)]
+    struct Counts {
+        images: u64,
+        videos: u64,
+    }
+    let c: Counts = serde_json::from_str(&json)
+        .map_err(|e| io::Error::other(format!("cannot parse the library count: {e}")))?;
+    Ok((c.images, c.videos))
+}
+
+/// Enumerates images and videos, one page at a time (§10.3).
 ///
 /// Returns JSON rather than a stream of JNI objects: one call and one parse is far
 /// cheaper than thousands of JNI round trips, and §21 forbids holding the library
-/// in memory only in the sense of *media bytes* — a catalogue row is tiny. The
-/// Kotlin side takes a limit and offset so a large library is walked in pages.
-pub fn enumerate(limit: i32, offset: i32) -> io::Result<Vec<ScannedRow>> {
+/// in memory only in the sense of *media bytes* — a catalogue row is tiny.
+///
+/// Paging is by `_ID` watermark, not by offset. Offset paging over a non-unique sort
+/// key can drop rows between pages, which here means a photo that never gets copied
+/// and nothing anywhere reporting it. Pass [`NO_WATERMARK`] for both on the first
+/// call, then feed back the values from the previous page.
+pub fn enumerate(limit: i32, after_image_id: i64, after_video_id: i64) -> io::Result<ScanPage> {
     let mut guard = jvm::attach().map_err(|e| jni_err("attach", e))?;
     let env = &mut *guard;
     let ctx = jvm::context().map_err(|e| jni_err("context", e))?;
@@ -319,14 +448,15 @@ pub fn enumerate(limit: i32, offset: i32) -> io::Result<Vec<ScannedRow>> {
         .call_static_method(
             &class,
             "enumerate",
-            "(Landroid/content/Context;II)Ljava/lang/String;",
+            "(Landroid/content/Context;IJJ)Ljava/lang/String;",
             &[
                 JValue::Object(&ctx_obj),
                 JValue::Int(limit),
-                JValue::Int(offset),
+                JValue::Long(after_image_id),
+                JValue::Long(after_video_id),
             ],
         )
-        .map_err(|e| jni_err("enumerate", e))?;
+        .map_err(|e| helper_failed(env, "enumerate", e))?;
     let json = take_string(env, "enumerate", out)?;
 
     serde_json::from_str(&json)

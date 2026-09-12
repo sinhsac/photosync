@@ -5,7 +5,7 @@
 //! (`app_info.md` §7). Everything before it required both sides to already know
 //! where the other was.
 
-use crate::fsprovider::{DirSink, DirSource};
+use photosync_core::dirstore::{DirSink, DirSource};
 use photosync_core::pairing::{CodeSession, PairingCode};
 use photosync_core::proto::PROTOCOL_MAJOR;
 use photosync_core::{db, session};

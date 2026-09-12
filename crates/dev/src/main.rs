@@ -11,10 +11,10 @@
 //!   psdev resume <file>          prove resumed hashing matches a single pass
 //!   psdev collide <dir>          write a quick-key collision pair (criterion 10)
 
-use photosync_core::catalog::{self, FilterArgs, ScannedAsset};
+use photosync_core::catalog::{self, FilterArgs};
 use photosync_core::chunk::{self, ChunkVerdict, FinishVerdict, InboundAsset, OutboundAsset};
 use photosync_core::identity::{self, FullHasher, QUICK_SAMPLE_LEN};
-use photosync_core::model::{Hash32, MediaType};
+use photosync_core::model::Hash32;
 use photosync_core::pairing::{AuthChallenge, CodeSession, PairingCode, ProofRole};
 use photosync_core::provider::FileStaging;
 use photosync_core::{db, Result};
@@ -22,7 +22,6 @@ use std::fs::{self, File};
 
 mod cutstream;
 mod discover;
-mod fsprovider;
 mod handshake;
 mod roles;
 mod sync;
@@ -946,51 +945,10 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Builds a [`ScannedAsset`] from a real file. The absolute path stands in for
-/// the platform asset id, which is exactly how it is used: a local key only.
-fn describe(path: &Path) -> Option<ScannedAsset> {
-    let meta = fs::metadata(path).ok()?;
-    if meta.len() == 0 {
-        return None;
-    }
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let (media_type, mime) = match ext.as_str() {
-        "jpg" | "jpeg" => (MediaType::Image, "image/jpeg"),
-        "png" => (MediaType::Image, "image/png"),
-        "heic" | "heif" => (MediaType::Image, "image/heic"),
-        "webp" => (MediaType::Image, "image/webp"),
-        "gif" => (MediaType::Image, "image/gif"),
-        "mp4" | "m4v" => (MediaType::Video, "video/mp4"),
-        "mov" => (MediaType::Video, "video/quicktime"),
-        "bin" => (MediaType::Image, "application/octet-stream"),
-        _ => return None,
-    };
-
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-
-    Some(ScannedAsset {
-        platform_asset_id: path.to_string_lossy().into_owned(),
-        size: meta.len(),
-        media_type,
-        mime: mime.to_string(),
-        created_at: modified,
-        modified_at: modified,
-        width: None,
-        height: None,
-        duration_ms: None,
-        display_name: path.file_name().map(|s| s.to_string_lossy().into_owned()),
-        resource_group_id: None,
-        is_local: true,
-    })
-}
+// One definition, in `photosync_core::dirstore`, shared by every command and by the
+// desktop binary. Two copies had drifted apart, and the one the `send` command used
+// reported every file as `application/octet-stream`.
+use photosync_core::dirstore::describe;
 
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {

@@ -1,15 +1,94 @@
 //! Filesystem-backed library providers for the harness.
+//! A photo library that is just a directory.
 //!
 //! Stands in for PhotoKit and MediaStore. Not a mock: it satisfies the same
 //! contract the real adapters must, including the one rule that matters most —
 //! `commit` is the only call that makes an asset visible, and staging lives
 //! somewhere the "library" never looks (§13.3).
+//!
+//! Lives in `core` rather than in the dev harness because it is the desktop
+//! implementation, not a test double. A PC has no MediaStore and no PhotoKit; a
+//! folder *is* its photo library. The same code therefore backs both the harness and
+//! the desktop binary, which is the point — two copies had already drifted apart
+//! once, and the copy the sender used reported every file as
+//! `application/octet-stream`.
 
-use photosync_core::model::{AssetDescriptor, Hash32};
-use photosync_core::provider::{FileStaging, LibrarySink, LibrarySource, ReadSeek, StagingFile};
+use crate::catalog::ScannedAsset;
+use crate::model::{AssetDescriptor, MediaType};
+use crate::provider::{FileStaging, LibrarySink, LibrarySource, ReadSeek, StagingFile};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+/// Maps a file extension to a media type and MIME type.
+///
+/// `None` means "not media", which is how the harness skips its own database and
+/// any stray file in the library directory.
+///
+/// This mapping is the harness's stand-in for what MediaStore and PhotoKit report,
+/// and it has to be right for a reason that is not obvious: the receiver inserts
+/// into a MediaStore *collection* chosen from the media type, and MediaStore then
+/// refuses any MIME the collection does not accept. A sender that reports
+/// `application/octet-stream` for a JPEG gets its bytes transferred, verified, and
+/// then rejected at publish — the asset is lost at the last step, with the failure
+/// appearing on the receiver.
+pub fn media_kind(path: &Path) -> Option<(MediaType, &'static str)> {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    Some(match ext.as_str() {
+        "jpg" | "jpeg" => (MediaType::Image, "image/jpeg"),
+        "png" => (MediaType::Image, "image/png"),
+        "heic" | "heif" => (MediaType::Image, "image/heic"),
+        "webp" => (MediaType::Image, "image/webp"),
+        "gif" => (MediaType::Image, "image/gif"),
+        "mp4" | "m4v" => (MediaType::Video, "video/mp4"),
+        "mov" => (MediaType::Video, "video/quicktime"),
+        // The synthetic fixtures the harness generates. Kept because a transfer of
+        // opaque bytes is still a valid transfer test, and because it is the case
+        // that exercises the receiver's MIME fallback.
+        "bin" => (MediaType::Image, "application/octet-stream"),
+        _ => return None,
+    })
+}
+
+/// Builds a [`ScannedAsset`] from a real file.
+///
+/// The absolute path stands in for the platform asset id, which is exactly how it
+/// is used: a local key only (§11). Returns `None` for an empty file or one that is
+/// not recognisable media — neither is a gallery entry.
+pub fn describe(path: &Path) -> Option<ScannedAsset> {
+    let meta = fs::metadata(path).ok()?;
+    if meta.len() == 0 {
+        return None;
+    }
+    let (media_type, mime) = media_kind(path)?;
+
+    // The filesystem has no "date taken", so mtime stands in for it. That is what
+    // §16 carries to the receiver, and it is why the fixtures set mtime explicitly.
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    Some(ScannedAsset {
+        platform_asset_id: path.to_string_lossy().into_owned(),
+        size: meta.len(),
+        media_type,
+        mime: mime.to_string(),
+        created_at: modified,
+        modified_at: modified,
+        width: None,
+        height: None,
+        duration_ms: None,
+        display_name: path.file_name().map(|s| s.to_string_lossy().into_owned()),
+        resource_group_id: None,
+        is_local: true,
+    })
+}
 
 /// Reads originals from a directory. `platform_asset_id` is the absolute path,
 /// which is exactly how a platform id is used: a local key only (§11).
@@ -65,10 +144,18 @@ impl DirSink {
 }
 
 impl LibrarySink for DirSink {
-    fn staging(&self, key: &Hash32) -> io::Result<(String, Box<dyn StagingFile + Send>)> {
+    fn staging(
+        &self,
+        descriptor: &AssetDescriptor,
+    ) -> io::Result<(String, Box<dyn StagingFile + Send>)> {
         // Named by content key so reopening after a restart finds the same bytes,
         // which is what resume across a process death depends on (§13.4).
-        let path = self.staging.join(format!("{}.part", key.to_hex()));
+        //
+        // A directory has no collections and no MIME registry, so the rest of the
+        // descriptor is genuinely not needed here.
+        let path = self
+            .staging
+            .join(format!("{}.part", descriptor.quick_hash.to_hex()));
         let file = FileStaging::create(&path)?;
         Ok((path.to_string_lossy().into_owned(), Box::new(file)))
     }

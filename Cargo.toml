@@ -8,6 +8,17 @@ members = [
   "crates/net",
 ]
 
+# `crates/android` is a member so `cargo ndk -p photosync-android` resolves it from
+# the workspace, but it is not a default member: it uses `std::os::fd` and JNI, so it
+# only compiles for an Android target. Leaving it in the default set made a plain
+# `cargo clippy` on the host fail with errors that say nothing about the code.
+default-members = [
+  "crates/core",
+  "crates/dev",
+  "crates/ffi",
+  "crates/net",
+]
+
 [workspace.package]
 edition = "2021"
 rust-version = "1.88"

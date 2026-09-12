@@ -83,11 +83,25 @@ pub trait LibrarySink {
     /// Creates or reopens staging for an asset.
     ///
     /// Returns an opaque reference to persist in `inbound_transfer.staging_ref`,
-    /// plus the handle. Reopening with the same key must return the same bytes,
-    /// or resume cannot work across a restart.
+    /// plus the handle. Reopening with the same `descriptor.quick_hash` must return
+    /// the same bytes, or resume cannot work across a restart.
+    ///
+    /// # Why the whole descriptor and not just the key
+    ///
+    /// The key alone is enough to name a temp file, and that is all the filesystem
+    /// implementation uses. MediaStore is different: a pending row is created inside
+    /// a *collection* (`Images` or `Video`) with a MIME type, and neither can be
+    /// changed afterwards — an `update` that tries to move a row between
+    /// collections, or to set a MIME the collection does not accept, is rejected
+    /// with `IllegalArgumentException`.
+    ///
+    /// So the decision has to be made here, at insert time. It can be: `ASSET_BEGIN`
+    /// carries the descriptor and arrives before this call, so the media type is
+    /// already known. Passing only the key made a value that was available look
+    /// unavailable, and pushed an impossible fix-up into `commit`.
     fn staging(
         &self,
-        key: &crate::model::Hash32,
+        descriptor: &crate::model::AssetDescriptor,
     ) -> io::Result<(String, Box<dyn StagingFile + Send>)>;
 
     /// Publishes a verified staging file into the library.

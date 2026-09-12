@@ -5,10 +5,9 @@
 //! observed rather than argued about.
 
 use crate::cutstream::{CutAfter, Mode};
-use crate::fsprovider::{DirSink, DirSource};
-use photosync_core::catalog::{self, FilterArgs, ScannedAsset};
+use photosync_core::dirstore::{DirSink, DirSource};
+use photosync_core::catalog::{self, FilterArgs};
 use photosync_core::identity as core_identity;
-use photosync_core::model::MediaType;
 use photosync_core::pairing::{CodeSession, PairingCode};
 use photosync_core::{db, session};
 use photosync_net::identity::Identity;
@@ -753,33 +752,11 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn describe(path: &Path) -> Option<ScannedAsset> {
-    let meta = fs::metadata(path).ok()?;
-    if meta.len() == 0 {
-        return None;
-    }
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-
-    Some(ScannedAsset {
-        platform_asset_id: path.to_string_lossy().into_owned(),
-        size: meta.len(),
-        media_type: MediaType::Image,
-        mime: "application/octet-stream".into(),
-        created_at: modified,
-        modified_at: modified,
-        width: None,
-        height: None,
-        duration_ms: None,
-        display_name: path.file_name().map(|s| s.to_string_lossy().into_owned()),
-        resource_group_id: None,
-        is_local: true,
-    })
-}
+// `describe` lives in `photosync_core::dirstore` so the sender, the desktop binary
+// and every other command agree on the MIME type. They did not: this module used to
+// hardcode `application/octet-stream` for every file, which is exactly what the real
+// receiver rejects at publish time.
+use photosync_core::dirstore::describe;
 
 /// Unused today, kept because the counters query needs a peer id and the harness
 /// will want to inspect them between sessions.

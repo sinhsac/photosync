@@ -5,7 +5,7 @@
 //! is typed in. The code travels out of band — read off one screen, typed on the
 //! other — which is the entire point of §6.
 
-use crate::fsprovider::{DirSink, DirSource};
+use photosync_core::dirstore::{DirSink, DirSource};
 use photosync_core::pairing::{CodeSession, PairingCode};
 use photosync_core::proto::PROTOCOL_MAJOR;
 use photosync_core::{db, session};

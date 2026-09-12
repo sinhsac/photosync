@@ -24,6 +24,7 @@ mod cutstream;
 mod discover;
 mod fsprovider;
 mod handshake;
+mod roles;
 mod sync;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -61,6 +62,22 @@ fn main() -> ExitCode {
             _ => usage("sync needs a source and a destination directory"),
         },
         Some("netinfo") => discover::probe(),
+        Some("serve") => match args.get(1) {
+            Some(dst) => {
+                let dst = Path::new(dst);
+                let db = roles::default_db(dst, "receiver");
+                roles::serve(dst, &db)
+            }
+            None => usage("serve needs a destination directory"),
+        },
+        Some("send") => match (args.get(1), args.get(2)) {
+            (Some(src), Some(code)) => {
+                let src = Path::new(src);
+                let db = roles::default_db(src, "sender");
+                roles::send(src, &db, code, args.get(3).map(String::as_str))
+            }
+            _ => usage("send needs a source directory and a code"),
+        },
         Some("discover") => match (args.get(1), args.get(2)) {
             (Some(src), Some(dst)) => discover::run(Path::new(src), Path::new(dst)),
             _ => usage("discover needs a source and a destination directory"),
@@ -101,6 +118,9 @@ fn usage(msg: &str) -> Result<()> {
     eprintln!("  psdev sync <src> <dst>  full end-to-end sync between two libraries");
     eprintln!("  psdev resume-session <src> <dst>");
     eprintln!("                          cut a sync mid-asset, reconnect with no code, resume");
+    eprintln!("  psdev serve <dst>       receive: show a code and wait");
+    eprintln!("  psdev send <src> <code> [addr]");
+    eprintln!("                          send to whoever answers that code");
     eprintln!("  psdev netinfo           what discovery can see on this machine");
     eprintln!("  psdev discover <src> <dst>");
     eprintln!("                          announce, discover, then sync with no typed address");

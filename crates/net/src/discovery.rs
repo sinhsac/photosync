@@ -57,8 +57,21 @@ pub const SCAN_CONCURRENCY: usize = 50;
 /// How many interfaces to scan before asking the user to choose (§7.4).
 pub const MAX_INTERFACES: usize = 3;
 
+/// How often a waiting receiver repeats its announcement burst.
+///
+/// One burst is not enough: the user reads a code off one device and walks to the
+/// other, so the sender starts listening long after the receiver started
+/// announcing.
+pub const ANNOUNCE_PERIOD: Duration = Duration::from_secs(2);
+
 /// Grace period before escalating from announce to subnet scan (§7.3).
-pub const ESCALATION_GRACE: Duration = Duration::from_secs(1);
+///
+/// **Must exceed [`ANNOUNCE_PERIOD`], with margin.** An earlier value of one
+/// second was shorter than the announce period, so a sender could easily start
+/// listening just after a burst and hear nothing before escalating — on two real
+/// devices that happened on the first attempt. Escalating unnecessarily is not
+/// merely wasteful; see [`probe`] for why it used to be actively harmful.
+pub const ESCALATION_GRACE: Duration = Duration::from_millis(2_500);
 
 /// Largest announcement we will parse. Bounded because it arrives from the
 /// network.
@@ -312,11 +325,33 @@ pub async fn listen(
 // Subnet scan (fallback)
 // ---------------------------------------------------------------------------
 
+/// Probes one address by opening a TCP connection and closing it.
+///
+/// # Why this is not harmless
+///
+/// A probe is indistinguishable, at the socket level, from a real peer that
+/// connects and then vanishes before TLS. A receiver that treats any failed
+/// connection as a failed session and gives up is therefore **taken down by its
+/// own peer's discovery scan**. That is not hypothetical: it is what happened the
+/// first time this ran between two real devices, and the sender then found the
+/// receiver's port closed.
+///
+/// The scan cannot avoid connecting — that is the only way to find a listener
+/// without multicast. So the obligation sits on the receiver: it must survive
+/// connections that go nowhere and keep listening (§9.6). Both halves of that
+/// contract are needed, and only one of them is in this file.
+async fn probe(addr: SocketAddr) -> Option<SocketAddr> {
+    match tokio::time::timeout(PROBE_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
+        Ok(Ok(_stream)) => Some(addr),
+        _ => None,
+    }
+}
+
 /// Probes every address in the /24 around `interface` (§7.4).
 ///
-/// The probe is a plain TCP connect: anything that accepts is a candidate, and
-/// authentication decides which one is right. No fingerprint is learned here,
-/// which is fine — it is learned from the TLS handshake that follows.
+/// Anything that accepts is a candidate, and authentication decides which one is
+/// right. No fingerprint is learned here; it comes from the TLS handshake that
+/// follows.
 ///
 /// Exists specifically for the hotspot case, where multicast is least reliable.
 pub async fn scan_subnet(interface: Ipv4Addr, port: u16) -> Vec<Candidate> {
@@ -331,12 +366,7 @@ pub async fn scan_subnet(interface: Ipv4Addr, port: u16) -> Vec<Candidate> {
         }
         let addr = SocketAddr::from(SocketAddrV4::new(ip, port));
 
-        in_flight.push(tokio::spawn(async move {
-            match tokio::time::timeout(PROBE_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
-                Ok(Ok(_stream)) => Some(addr),
-                _ => None,
-            }
-        }));
+        in_flight.push(tokio::spawn(probe(addr)));
 
         if in_flight.len() >= SCAN_CONCURRENCY {
             drain(&mut in_flight, &mut found).await;
@@ -358,6 +388,37 @@ async fn drain(
             });
         }
     }
+}
+
+/// Groups candidates by peer, since one device announces on every interface it
+/// has and therefore appears once per reachable path.
+///
+/// Observed immediately on a normal laptop: a single receiver produced four
+/// candidates (`192.168.1.16`, `172.30.64.1`, `192.168.56.1`, `127.0.0.1`), all
+/// the same fingerprint. Presenting those as four devices would be nonsense, and
+/// §19 has no room for a device list in the first place.
+///
+/// The extra addresses are not noise, though, so they are kept rather than
+/// discarded: if the first path fails to connect, the next one is worth trying,
+/// and on a phone that is exactly the difference between the Wi-Fi interface and
+/// the hotspot interface.
+///
+/// Candidates from a subnet scan have no fingerprint yet and cannot be grouped;
+/// each is returned on its own.
+pub fn group_by_peer(candidates: Vec<Candidate>) -> Vec<Vec<Candidate>> {
+    let mut groups: Vec<Vec<Candidate>> = Vec::new();
+    for candidate in candidates {
+        let fp = candidate.announced.as_ref().map(|a| a.fp);
+        match fp.and_then(|fp| {
+            groups
+                .iter_mut()
+                .find(|g| g.first().and_then(|c| c.announced.as_ref()).map(|a| a.fp) == Some(fp))
+        }) {
+            Some(group) => group.push(candidate),
+            None => groups.push(vec![candidate]),
+        }
+    }
+    groups
 }
 
 /// Staged discovery (§7.3): listen first, escalate to scanning only if nothing

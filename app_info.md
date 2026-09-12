@@ -216,6 +216,14 @@ Candidate local addresses come from enumerating non-loopback interfaces. Deprior
 
 This fallback exists specifically for the hotspot case, where multicast is least reliable.
 
+### 7.4a One peer, many addresses
+
+A device announces on **every** interface it has, so the raw candidate list holds one entry per reachable path, not one per device. Observed immediately on a laptop: a single receiver produced four candidates — `192.168.1.16`, `172.30.64.1`, `192.168.56.1`, `127.0.0.1` — all with the same fingerprint.
+
+Group by fingerprint before anything reaches the user. §19 has no device list at all, so this matters less for the UI than for the connect logic, and there the extra addresses are an asset rather than noise: if the first path fails, the next is worth trying. On a phone that is precisely the difference between the Wi-Fi interface and the hotspot interface, which is the §7.6 case.
+
+Candidates from a subnet scan carry no fingerprint yet, so each stands alone until its handshake identifies it.
+
 ### 7.5 Manual address (last resort)
 
 Hidden behind "Can't find it?". The user types the IP shown on the receiver screen. Same handshake, no discovery involved.
@@ -1044,6 +1052,8 @@ Testing happens on real devices, so the engine ships with a desktop harness rath
 | `psdev handshake` | Real TCP + TLS 1.3, three legs: honest first contact, a relaying MITM that does not know the code, and a pinned-fingerprint mismatch. |
 | `psdev sync <src> <dst>` | A full session between two databases and two library directories over real TCP + TLS: first sync, repeat sync of an unchanged library, and a sync after one asset is added. |
 | `psdev resume-session <src> <dst>` | Cuts a sync mid-asset, then reconnects with **no code** and finishes. Criteria 3 and 7 at the session level. |
+| `psdev netinfo` | What discovery can see: interfaces in preference order, and what a subnet scan would cost. |
+| `psdev discover <src> <dst>` | Announce, discover, connect and sync with no address typed anywhere (§7). |
 
 `psdev sync` is where criteria 1, 2 and 10 stop being arguments:
 
@@ -1084,6 +1094,23 @@ leg 1b (peer freezes, socket left open)
 ```
 
 Shortened deadlines are used for that leg so the behaviour can be observed in seconds. Without §8's deadlines this leg hangs forever, which is how the requirement was found in the first place.
+
+`psdev discover` closes the last gap — a sync with nobody typing an address:
+
+```
+discovery took  : 1.02s
+candidates      : 4
+distinct peers  : 1
+  "psdev receiver" on windows (fp f8cf3ac1becb) reachable at 4 address(es):
+    192.168.1.16:53411 / 172.30.64.1:53411 / 127.0.0.1:53411 / 192.168.56.1:53411
+announced fp    : f8cf3ac1becb
+handshake fp    : f8cf3ac1becb   match: yes
+transferred     : 2 assets, 7340032 bytes
+```
+
+The announced fingerprint is compared against the one the TLS handshake actually presented. They match here, and the comparison exists because the announcement is an unauthenticated hint: only the handshake decides identity (§9.1).
+
+Loopback is included for the harness so both roles can run on one machine. It is excluded in the product.
 
 `transfer` covers four cases, three of which are impractical to trigger deliberately on hardware:
 

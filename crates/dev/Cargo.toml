@@ -13,4 +13,5 @@ path = "src/main.rs"
 photosync-core = { path = "../core" }
 photosync-net = { path = "../net" }
 rusqlite.workspace = true
+tracing.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }

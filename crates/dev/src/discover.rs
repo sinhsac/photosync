@@ -16,7 +16,6 @@ use photosync_net::orchestrator::{run_receiver, run_sender, ReceiverAuth, Sender
 use photosync_net::tls::{client_config, server_config, Pinning};
 use photosync_net::tls_stream::{ServerName, TlsAcceptor, TlsConnector};
 use std::fs;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
@@ -168,16 +167,32 @@ async fn drive(src_dir: &Path, dst_dir: &Path) -> photosync_core::Result<()> {
 
     println!("discovery took  : {elapsed:?}");
     println!("candidates      : {}", candidates.len());
-    for c in &candidates {
-        match &c.announced {
-            Some(a) => println!(
-                "  {} announced by {:?} on {} (fp {})",
-                c.addr,
-                a.name,
-                a.platform,
-                a.fp.short()
+
+    // One device announces on every interface it has, so the raw list contains
+    // one entry per reachable path. Grouped by fingerprint it is one peer.
+    let groups = discovery::group_by_peer(candidates.clone());
+    println!("distinct peers  : {}", groups.len());
+    for group in &groups {
+        match group.first().and_then(|c| c.announced.as_ref()) {
+            Some(a) => {
+                println!(
+                    "  {:?} on {} (fp {}) reachable at {} address(es):",
+                    a.name,
+                    a.platform,
+                    a.fp.short(),
+                    group.len()
+                );
+                for c in group {
+                    println!("    {}", c.addr);
+                }
+            }
+            None => println!(
+                "  unidentified, found by subnet scan at {}",
+                group
+                    .first()
+                    .map(|c| c.addr.to_string())
+                    .unwrap_or_default()
             ),
-            None => println!("  {} found by subnet scan, fingerprint unknown yet", c.addr),
         }
     }
 
@@ -294,5 +309,3 @@ async fn wait_port_free(port: u16, budget: Duration) -> bool {
     }
     false
 }
-
-

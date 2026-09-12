@@ -63,51 +63,81 @@ async fn serve_inner(dst: &Path, db_path: &Path) -> photosync_core::Result<()> {
     let announcer = tokio::spawn(async move {
         loop {
             let _ = discovery::announce(&announcement, discovery::DEFAULT_PORT, false).await;
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(discovery::ANNOUNCE_PERIOD).await;
         }
     });
-
-    let (tcp, from) = listener.accept().await?;
-    announcer.abort();
-    println!("\nconnection from {from}");
-
-    let (cfg, observed) = server_config(&identity, Pinning::FirstContact).expect("server config");
-    let tls =
-        TlsAcceptor::from(cfg)
-            .accept(tcp)
-            .await
-            .map_err(|e| photosync_core::Error::Protocol {
-                detail: format!("tls: {e}"),
-            })?;
-    let peer_fp = observed.get().expect("client certificate");
-    println!("peer fingerprint {}", peer_fp.short());
 
     let conn = db::open(db_path)?;
     let sink = DirSink::new(dst)?;
     session::sweep_stale_active(&conn)?;
-    let resume_id = session::latest_resumable(&conn)?.map(|s| s.id);
-    if resume_id.is_some() {
-        println!("resuming an interrupted session");
-    }
 
     let mut code_session = CodeSession::with_code(code, db::now_millis());
-    let started = std::time::Instant::now();
-    let totals = run_receiver(
-        &mut Link::new(tls, Timeouts::default()),
-        &conn,
-        &sink,
-        identity.fingerprint(),
-        peer_fp,
-        ReceiverAuth::Code(&mut code_session),
-        &hostname(),
-        db::now_millis(),
-        resume_id,
-    )
-    .await
-    .map_err(|e| photosync_core::Error::Protocol {
-        detail: format!("receiver: {e}"),
-    })?;
-    let elapsed = started.elapsed();
+
+    // **Accept in a loop.** A single accept was wrong in a way that only showed
+    // up between two real devices: the sender's own subnet scan connects and
+    // drops, that looked like a failed session, and the receiver exited — so by
+    // the time the sender tried to connect properly, the port was closed.
+    //
+    // A connection that goes nowhere is normal. Discovery probes, port scanners,
+    // and a peer whose Wi-Fi drops mid-handshake all produce one. The receiver
+    // keeps listening until a session completes or the code is spent (§6, §9.6).
+    let (totals, elapsed) = loop {
+        if !code_session.is_live(db::now_millis()) {
+            println!("\nThe code expired or was used up. Restart to get a new one.");
+            announcer.abort();
+            return Ok(());
+        }
+
+        let (tcp, from) = listener.accept().await?;
+
+        let (cfg, observed) =
+            server_config(&identity, Pinning::FirstContact).expect("server config");
+        let tls = match TlsAcceptor::from(cfg).accept(tcp).await {
+            Ok(tls) => tls,
+            Err(e) => {
+                // Almost always a discovery probe. Not worth alarming the user.
+                tracing::debug!(%from, "connection closed before TLS completed: {e}");
+                continue;
+            }
+        };
+        let Some(peer_fp) = observed.get() else {
+            continue;
+        };
+
+        println!(
+            "\nconnection from {from}, peer fingerprint {}",
+            peer_fp.short()
+        );
+
+        let resume_id = session::latest_resumable(&conn)?.map(|s| s.id);
+        if resume_id.is_some() {
+            println!("resuming an interrupted session");
+        }
+
+        let started = std::time::Instant::now();
+        match run_receiver(
+            &mut Link::new(tls, Timeouts::default()),
+            &conn,
+            &sink,
+            identity.fingerprint(),
+            peer_fp,
+            ReceiverAuth::Code(&mut code_session),
+            &hostname(),
+            db::now_millis(),
+            resume_id,
+        )
+        .await
+        {
+            Ok(totals) => break (totals, started.elapsed()),
+            Err(e) => {
+                // A wrong code costs one attempt and the loop continues (§6).
+                println!("that attempt failed: {e}");
+                println!("attempts left: {}", code_session.attempts_left());
+                continue;
+            }
+        }
+    };
+    announcer.abort();
 
     println!("\nreceived : {} committed", totals.items_done);
     println!("skipped  : {}", totals.items_skipped);
@@ -152,14 +182,23 @@ async fn send_inner(
     code: PairingCode,
     addr: Option<&str>,
 ) -> photosync_core::Result<()> {
+    // A fresh identity every run, because the harness has nowhere safe to keep a
+    // private key. The product persists it in the OS keystore (§9.1), and that
+    // difference matters: with a new certificate each run the peer sees a new
+    // device, so §9.5's code-free reconnect cannot be exercised across separate
+    // invocations here. `psdev resume-session` covers that path instead, by
+    // holding one identity across both legs.
     let identity = Identity::generate().expect("identity");
 
     println!("PhotoSync sender");
     println!("  library     : {}", src.display());
     println!("  fingerprint : {}", identity.fingerprint().short());
 
-    let scanned = crate::sync::catalogue_pub(db_path, src)?;
-    println!("  catalogued  : {scanned} assets");
+    // Reports assets *newly hashed*, not assets catalogued. On a second run this
+    // is zero because a hash is computed once and cached forever (§15.3) — which
+    // read as "nothing found" until the label was fixed.
+    let hashed = crate::sync::catalogue_pub(db_path, src)?;
+    println!("  newly hashed: {hashed} (already-hashed assets are reused)");
 
     let target: SocketAddr = match addr {
         Some(a) => {

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        AppCompat rather than Material: this bring-up screen uses plain framework
+        widgets, and pulling in Material would add a dependency that the real §19
+        UI (Flutter) will not use either.
+    -->
+    <style name="Theme.PhotoSync" parent="Theme.AppCompat.DayNight.NoActionBar" />
+</resources>

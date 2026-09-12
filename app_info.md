@@ -1054,6 +1054,10 @@ Testing happens on real devices, so the engine ships with a desktop harness rath
 | `psdev resume-session <src> <dst>` | Cuts a sync mid-asset, then reconnects with **no code** and finishes. Criteria 3 and 7 at the session level. |
 | `psdev netinfo` | What discovery can see: interfaces in preference order, and what a subnet scan would cost. |
 | `psdev discover <src> <dst>` | Announce, discover, connect and sync with no address typed anywhere (§7). |
+| `psdev serve <dst>` | Receive: show a code and wait. One of the two real roles. |
+| `psdev send <src> <code> [addr]` | Send to whoever answers that code, discovering the peer unless an address is given. |
+
+`serve` and `send` are what make a two-device test possible before any app exists: build the binary for `aarch64-linux-android`, push it with `adb`, and run the two halves on two machines.
 
 `psdev sync` is where criteria 1, 2 and 10 stop being arguments:
 
@@ -1111,6 +1115,36 @@ transferred     : 2 assets, 7340032 bytes
 The announced fingerprint is compared against the one the TLS handshake actually presented. They match here, and the comparison exists because the announcement is an unauthenticated hint: only the handshake decides identity (§9.1).
 
 Loopback is included for the harness so both roles can run on one machine. It is excluded in the product.
+
+#### Verified on real hardware
+
+`psdev serve` and `psdev send` are the two roles as separate processes, which is what made a genuine two-device test possible before any app exists: the Rust binary is built for `aarch64-linux-android` and run through `adb shell`, no APK and no Flutter involved.
+
+Ran between a Windows PC (`192.168.1.16`) and a **Samsung Galaxy A50s, Android 11, API 30, arm64-v8a** (`192.168.1.19`) over ordinary Wi-Fi.
+
+First sync:
+
+```
+sender    discovering... "a50s" on android (fp f8b38c804c38) at 192.168.1.19:53411
+          peer fingerprint f8b38c804c38
+          sent 5 committed, 0 failed, 24117248 bytes, 2.6 MB/s over 8.9s
+receiver  connection from 192.168.1.16, peer fingerprint ea810527d356
+          received 5 committed, 0 failed, 24117248 bytes
+```
+
+Both fingerprints were recognised in each direction, nobody typed an address, and the code was read off one screen and typed on the other.
+
+Integrity checked with two independent tools on two operating systems — PowerShell `Get-FileHash` on the source, Android `sha256sum` on the destination — and all five digests matched exactly. Two of the five are the quick-key collision pair, so **criterion 10 holds on real hardware**: `344fe667…9cbe` and `d8928ae6…5475` both arrived intact despite sharing a quick hash. Staging was empty afterwards, and file timestamps carried the source creation dates rather than the transfer time (§16).
+
+Second sync, same libraries:
+
+```
+sent 0 committed, skipped 5, 0 bytes, 0.2s
+```
+
+Zero bytes on the wire, and 8.9s became 0.2s. Worth noting *why* this worked despite the harness generating a fresh certificate on every run: to the receiver this was a brand-new device, so `sent_log` was empty and all five assets were offered. They were skipped because the sender still had their full hashes cached in `local_asset` from the first run, and the receiver recognised those hashes in `received_asset` — the exact-match path of §11.3, not the peer-specific one. Content-addressed dedup survives a change of device identity; peer-scoped dedup would not have.
+
+Three bugs surfaced only here, none of which desktop testing could have found. They are recorded in §26.12.
 
 `transfer` covers four cases, three of which are impractical to trigger deliberately on hardware:
 
@@ -1248,6 +1282,22 @@ The first attempt at `psdev handshake` modelled a man in the middle by having th
 An attacker holding the code is indistinguishable from the intended peer, by construction: at first contact the code is the only authenticator there is. The property worth testing, and the one §9.3 actually delivers, is that an attacker who does **not** know the code cannot relay between two honest devices — its two TLS legs each present its own certificate, so the sender's transcript and the receiver's transcript cannot agree.
 
 Two things came out of this beyond the corrected test. §9.4 now states the property and its limit explicitly rather than leaving "a man in the middle is rejected" to be read too broadly. And the relay itself had to be a genuine bidirectional byte copy: the receiver sends `Hello` and `AuthChallenge` back to back, so a request/response relay deadlocks — a real attacker would not have made that mistake, and a test that does gives a false pass.
+
+---
+
+### 26.12 Three faults that only a second device could reveal
+
+The engine passed every desktop check before it was ever run against a phone. The first real two-device attempt failed immediately, in three separate ways.
+
+**The discovery probe took down the receiver it was looking for.** A subnet-scan probe is a TCP connect followed by a close, which at the socket level is indistinguishable from a peer that vanishes before TLS. The receiver treated that as a failed session and exited — so the sender's own scan closed the port it was about to use, and the sender then reported "connection refused" while the receiver reported "TLS handshake EOF". Two confusing errors, one cause.
+
+The scan cannot avoid connecting; that is the only way to find a listener without multicast. So the obligation is on the receiver: **it must accept in a loop and survive connections that go nowhere** (§9.6). Probes, port scanners, and a peer whose Wi-Fi drops mid-handshake all produce one. A single `accept` was never right.
+
+**The escalation grace was shorter than the announce period.** Discovery listened for 1s while a waiting receiver announced every 2s, so a sender could easily start listening just after a burst, hear nothing, and escalate to a scan. Combined with the fault above, the fallback destroyed the thing the primary path would have found a moment later. `ESCALATION_GRACE` must exceed `ANNOUNCE_PERIOD` with margin.
+
+**`getifaddrs` does not exist in Android's bionic before API 24.** Interface enumeration failed to link at the default NDK platform level of 21. This had stayed hidden because `photosync-ffi` depends only on `photosync-core`, so the discovery code had never been linked for Android at all — the `.so` built cleanly for three ABIs while containing none of it. Fixed by building at platform 24, which matches Flutter 3.44's own `minSdkVersion`, so `minSdk` must be at least 24.
+
+The pattern across all three: each was invisible not because the desktop was too forgiving, but because the desktop never exercised that combination — one process instead of two, one interface instead of several, one libc instead of two.
 
 ---
 

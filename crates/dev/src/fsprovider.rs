@@ -36,12 +36,21 @@ impl DirSink {
         Ok(Self { library, staging })
     }
 
-    /// Visible assets only. Staging is a dotted subdirectory and is skipped, the
-    /// same way a pending MediaStore row is invisible to the gallery.
+    /// Visible assets only.
+    ///
+    /// Dotfiles are excluded, not just the `.staging` directory. The harness puts
+    /// its database beside the library, and counting it as an asset made a
+    /// successful 5-asset transfer report "8 files" — which reads as a bug in the
+    /// transfer rather than in the reporting. A hidden file is not a gallery
+    /// entry, the same way a pending MediaStore row is invisible.
     pub fn visible(&self) -> io::Result<Vec<PathBuf>> {
         let mut out = Vec::new();
         for entry in fs::read_dir(&self.library)? {
             let entry = entry?;
+            let hidden = entry.file_name().to_string_lossy().starts_with('.');
+            if hidden {
+                continue;
+            }
             if entry.file_type()?.is_file() {
                 out.push(entry.path());
             }

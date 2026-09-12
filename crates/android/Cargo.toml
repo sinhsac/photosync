@@ -1,0 +1,19 @@
+[package]
+name = "photosync-android"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "photosync_android"
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.21"
+photosync-core = { path = "../core" }
+photosync-net = { path = "../net" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync"] }
+tracing.workspace = true

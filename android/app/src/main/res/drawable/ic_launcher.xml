@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    A vector, not a set of density-bucketed PNGs. minSdk is 24 and vector launcher
+    icons resolve from API 21, so one file replaces five and there is no mipmap
+    bucket that can be missing at runtime.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#1B4965"
+        android:pathData="M0,0h108v108h-108z" />
+
+    <!-- Two overlapping frames: the "copy from one device to another" idea. -->
+    <path
+        android:fillColor="#5FA8D3"
+        android:pathData="M22,30h40v40h-40z" />
+    <path
+        android:fillColor="#CAE9FF"
+        android:pathData="M46,38h40v40h-40z" />
+    <path
+        android:fillColor="#1B4965"
+        android:pathData="M66,52m-7,0a7,7 0,1 0,14 0a7,7 0,1 0,-14 0z" />
+</vector>

@@ -61,15 +61,40 @@ pub extern "system" fn Java_app_photosync_Native_nativeInit(
     _class: JClass,
     context: JObject,
 ) -> jstring {
-    let result = match env.new_global_ref(&context) {
-        Ok(global) => {
-            jvm::set_context(global);
+    let result = match init_globals(&mut env, &context) {
+        Ok(()) => {
             log::line("native library ready");
             "{\"ok\":true}".to_string()
         }
-        Err(e) => format!("{{\"ok\":false,\"error\":\"cannot hold the Context: {e}\"}}"),
+        Err(e) => format!("{{\"ok\":false,\"error\":\"{e}\"}}"),
     };
     to_jstring(&mut env, result)
+}
+
+/// Promotes the `Context` and resolves the MediaStore helper class.
+///
+/// Both must happen here, on the thread Java called in on. The `Context` because a
+/// local reference dies when this method returns; the class because this is the
+/// only thread with the *application* class loader. Engine threads attach later
+/// with the system loader and cannot resolve anything from the APK by name, so a
+/// lookup deferred to first use fails with `ClassNotFoundException` at the worst
+/// possible moment — mid-transfer, on a background thread, as an unhandled Java
+/// exception that takes the process down.
+fn init_globals(env: &mut JNIEnv, context: &JObject) -> Result<(), String> {
+    let ctx = env
+        .new_global_ref(context)
+        .map_err(|e| format!("cannot hold the Context: {e}"))?;
+    jvm::set_context(ctx);
+
+    let class = env
+        .find_class("app/photosync/PhotoStore")
+        .map_err(|e| format!("cannot find app.photosync.PhotoStore: {e}"))?;
+    let class = env
+        .new_global_ref(&class)
+        .map_err(|e| format!("cannot hold PhotoStore: {e}"))?;
+    jvm::set_helper_class(class);
+
+    Ok(())
 }
 
 /// Engine self check (§22.3): proves SQLite linked, migrations run, and the
@@ -79,15 +104,17 @@ pub extern "system" fn Java_app_photosync_Native_nativeSelfCheck(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let out = guarded("selfCheck", || match photosync_core::bringup::self_check() {
-        Ok(c) => format!(
-            "{{\"ok\":{},\"schema\":{},\"candidates\":{},\"remaining\":{}}}",
-            c.is_ok(),
-            c.schema_version,
-            c.candidates,
-            c.remaining
-        ),
-        Err(e) => format!("{{\"ok\":false,\"error\":\"{e}\"}}"),
+    let out = guarded("selfCheck", || {
+        match photosync_core::bringup::self_check() {
+            Ok(c) => format!(
+                "{{\"ok\":{},\"schema\":{},\"candidates\":{},\"remaining\":{}}}",
+                c.is_ok(),
+                c.schema_version,
+                c.candidates,
+                c.remaining
+            ),
+            Err(e) => format!("{{\"ok\":false,\"error\":\"{e}\"}}"),
+        }
     });
     to_jstring(&mut env, out)
 }

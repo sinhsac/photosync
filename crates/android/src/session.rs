@@ -21,8 +21,31 @@ use photosync_net::orchestrator::{run_receiver, run_sender, ReceiverAuth, Sender
 use photosync_net::tls::{client_config, server_config, Pinning};
 use photosync_net::tls_stream::{ServerName, TlsAcceptor, TlsConnector};
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tokio::net::{TcpListener, TcpStream};
+
+/// Whether a session already owns the port and the database.
+///
+/// Not defensive tidiness: two receivers cannot coexist, because the second one
+/// fails to bind 53411 and reports "address already in use" — which is a confusing
+/// thing to show a user whose only mistake was tapping the button twice. Worse, the
+/// failure arrives on the second session's thread and overwrites the *first*
+/// session's status, so a perfectly healthy receiver appears to have died.
+///
+/// Claiming here, before anything is started, makes the second tap a no-op with an
+/// honest message.
+static BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Takes the session slot, or reports that it is taken.
+fn claim() -> bool {
+    !BUSY.swap(true, Ordering::SeqCst)
+}
+
+/// Releases the slot. Must run on every exit path, success or failure.
+fn release() {
+    BUSY.store(false, Ordering::SeqCst);
+}
 
 /// What the UI polls.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -184,7 +207,9 @@ pub fn scan_library(db_path: &str) -> String {
 
     match outcome {
         Ok((catalogued, hashed)) => {
-            log::line(format!("scan complete: {catalogued} assets, {hashed} hashed"));
+            log::line(format!(
+                "scan complete: {catalogued} assets, {hashed} hashed"
+            ));
             format!("{{\"ok\":true,\"catalogued\":{catalogued},\"hashed\":{hashed}}}")
         }
         Err(e) => {
@@ -203,14 +228,23 @@ pub fn scan_library(db_path: &str) -> String {
 /// Returns as soon as the code exists so the UI can show it (§6). Everything
 /// after that is reported through the log and [`status_json`].
 pub fn start_receiver(db_path: &str) -> String {
+    if !claim() {
+        return failure("a session is already running");
+    }
     let identity = match Identity::generate() {
         Ok(i) => i,
-        Err(e) => return failure(e),
+        Err(e) => {
+            release();
+            return failure(e);
+        }
     };
     let issued = CodeSession::issue(db::now_millis());
     let code = match PairingCode::parse(issued.code().as_str()) {
         Some(c) => c,
-        None => return failure("generated code is malformed"),
+        None => {
+            release();
+            return failure("generated code is malformed");
+        }
     };
     let shown = issued.code().display_grouped();
     let fingerprint = identity.fingerprint().short();
@@ -263,13 +297,23 @@ fn fail_session(e: impl std::fmt::Display) {
         s.finished = true;
         s.error = Some(msg);
     });
+    release();
 }
 
-async fn receiver_loop(
-    db_path: &str,
-    identity: Identity,
-    code: PairingCode,
-) -> Result<(), String> {
+/// Records a completed session and frees the slot.
+fn finish_session(totals: &photosync_net::orchestrator::Totals) {
+    update_status(|s| {
+        s.running = false;
+        s.finished = true;
+        s.items_done = totals.items_done;
+        s.items_skipped = totals.items_skipped;
+        s.items_failed = totals.items_failed;
+        s.bytes_done = totals.bytes_done;
+    });
+    release();
+}
+
+async fn receiver_loop(db_path: &str, identity: Identity, code: PairingCode) -> Result<(), String> {
     let listener = TcpListener::bind(("0.0.0.0", discovery::DEFAULT_PORT))
         .await
         .map_err(|e| format!("cannot bind port {}: {e}", discovery::DEFAULT_PORT))?;
@@ -351,14 +395,7 @@ async fn receiver_loop(
         "done: {} saved, {} already present, {} failed, {} bytes",
         totals.items_done, totals.items_skipped, totals.items_failed, totals.bytes_done
     ));
-    update_status(|s| {
-        s.running = false;
-        s.finished = true;
-        s.items_done = totals.items_done;
-        s.items_skipped = totals.items_skipped;
-        s.items_failed = totals.items_failed;
-        s.bytes_done = totals.bytes_done;
-    });
+    finish_session(&totals);
     Ok(())
 }
 
@@ -371,9 +408,15 @@ pub fn start_sender(db_path: &str, code_text: &str, addr: Option<String>) -> Str
     let Some(code) = PairingCode::parse(code_text) else {
         return failure("that is not a 6-digit code");
     };
+    if !claim() {
+        return failure("a session is already running");
+    }
     let identity = match Identity::generate() {
         Ok(i) => i,
-        Err(e) => return failure(e),
+        Err(e) => {
+            release();
+            return failure(e);
+        }
     };
 
     set_status(Status {
@@ -478,14 +521,7 @@ async fn sender_run(
         "done: {} sent, {} already there, {} failed, {} bytes",
         totals.items_done, totals.items_skipped, totals.items_failed, totals.bytes_done
     ));
-    update_status(|s| {
-        s.running = false;
-        s.finished = true;
-        s.items_done = totals.items_done;
-        s.items_skipped = totals.items_skipped;
-        s.items_failed = totals.items_failed;
-        s.bytes_done = totals.bytes_done;
-    });
+    finish_session(&totals);
     Ok(())
 }
 

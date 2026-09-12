@@ -2,12 +2,28 @@
 //!
 //! The engine never sees any of this — it sees `LibrarySource` and `LibrarySink`
 //! (§17). What lives here is the translation to Android, and it is deliberately
-//! thin: all ContentResolver work is done by a small Java helper, and this module
-//! only calls six static methods on it.
+//! thin: all ContentResolver work is done by a small Kotlin helper, and this module
+//! only calls five static methods on it.
 //!
 //! Doing ContentResolver, ContentValues and Uri manipulation in raw JNI is a
-//! large amount of error-prone boilerplate for no benefit. Six calls with simple
+//! large amount of error-prone boilerplate for no benefit. Five calls with simple
 //! signatures is a surface small enough to reason about.
+//!
+//! # One attach per operation, and never across one
+//!
+//! Every function here attaches the thread once, does all of its JNI work, and
+//! lets the guard drop at the end. That structure is not stylistic.
+//!
+//! Dropping an [`AttachGuard`](jni::AttachGuard) detaches the thread, and detaching
+//! destroys the thread's *entire local reference frame*. A `JString` created before
+//! the drop is a dangling handle afterwards, and passing it to the next call is
+//! undefined behaviour. On a debug build ART's `-Xcheck:jni` notices and aborts the
+//! process with "use of deleted local reference"; on a release build it is a silent
+//! read of whatever now occupies that slot.
+//!
+//! So: arguments are built and consumed inside a single attach, and no JNI handle
+//! is ever returned from a function or stored in a local for later. The only
+//! long-lived references are the two globals in [`crate::jvm`].
 //!
 //! # Why a raw file descriptor
 //!
@@ -16,18 +32,17 @@
 //! needs random access to it, which is why [`StagingFile`] requires
 //! `Read + Write + Seek`: on resume it has to truncate and re-read (§13.4).
 //!
-//! Java hands over an owned descriptor from `ParcelFileDescriptor.detachFd()`, and
-//! `File::from_raw_fd` adopts it. Ownership transfers exactly once; Java must not
+//! Kotlin hands over an owned descriptor from `ParcelFileDescriptor.detachFd()`, and
+//! `File::from_raw_fd` adopts it. Ownership transfers exactly once; Kotlin must not
 //! close it afterwards.
 
 use crate::jvm;
 use jni::objects::{JObject, JString, JValue};
+use jni::JNIEnv;
 use photosync_core::model::{AssetDescriptor, Hash32, MediaType};
 use photosync_core::provider::{LibrarySink, LibrarySource, ReadSeek, StagingFile};
 use std::io;
 use std::os::fd::FromRawFd;
-
-const HELPER: &str = "app/photosync/PhotoStore";
 
 /// Turns a JNI failure into an `io::Error`, since that is what the provider
 /// traits speak.
@@ -35,22 +50,17 @@ fn jni_err(what: &str, e: impl std::fmt::Display) -> io::Error {
     io::Error::other(format!("{what}: {e}"))
 }
 
-/// Calls a static Java method returning `String`.
-fn call_static_string(method: &str, sig: &str, args: &[JValue]) -> io::Result<String> {
-    let mut env = jvm::attach().map_err(|e| jni_err("attach", e))?;
-    let ctx = jvm::context().map_err(|e| jni_err("context", e))?;
-
-    // Every helper method takes the Context first; passing it explicitly keeps
-    // the Java side free of static state.
-    let mut full: Vec<JValue> = Vec::with_capacity(args.len() + 1);
-    let ctx_obj = unsafe { JObject::from_raw(ctx.as_raw()) };
-    full.push(JValue::Object(&ctx_obj));
-    full.extend_from_slice(args);
-
-    let out = env
-        .call_static_method(HELPER, method, sig, &full)
-        .map_err(|e| jni_err(method, e))?;
-    let obj = out.l().map_err(|e| jni_err(method, e))?;
+/// Reads a `String` returned by a static helper method.
+///
+/// A null return is treated as an error rather than an empty string: every method
+/// that returns `String` here returns a URI, and an empty URI would fail later in
+/// a much less obvious place.
+fn take_string(
+    env: &mut JNIEnv,
+    method: &str,
+    value: jni::objects::JValueOwned,
+) -> io::Result<String> {
+    let obj = value.l().map_err(|e| jni_err(method, e))?;
     if obj.is_null() {
         return Err(io::Error::other(format!("{method} returned null")));
     }
@@ -61,44 +71,15 @@ fn call_static_string(method: &str, sig: &str, args: &[JValue]) -> io::Result<St
     Ok(s)
 }
 
-/// Calls a static Java method returning `int`.
-fn call_static_int(method: &str, sig: &str, args: &[JValue]) -> io::Result<i32> {
-    let mut env = jvm::attach().map_err(|e| jni_err("attach", e))?;
-    let ctx = jvm::context().map_err(|e| jni_err("context", e))?;
-
-    let mut full: Vec<JValue> = Vec::with_capacity(args.len() + 1);
-    let ctx_obj = unsafe { JObject::from_raw(ctx.as_raw()) };
-    full.push(JValue::Object(&ctx_obj));
-    full.extend_from_slice(args);
-
-    let out = env
-        .call_static_method(HELPER, method, sig, &full)
-        .map_err(|e| jni_err(method, e))?;
-    out.i().map_err(|e| jni_err(method, e))
-}
-
-/// Calls a static Java method returning `void`.
-fn call_static_void(method: &str, sig: &str, args: &[JValue]) -> io::Result<()> {
-    let mut env = jvm::attach().map_err(|e| jni_err("attach", e))?;
-    let ctx = jvm::context().map_err(|e| jni_err("context", e))?;
-
-    let mut full: Vec<JValue> = Vec::with_capacity(args.len() + 1);
-    let ctx_obj = unsafe { JObject::from_raw(ctx.as_raw()) };
-    full.push(JValue::Object(&ctx_obj));
-    full.extend_from_slice(args);
-
-    env.call_static_method(HELPER, method, sig, &full)
-        .map_err(|e| jni_err(method, e))?;
-    Ok(())
-}
-
-/// Wraps an owned descriptor handed over by Java.
+/// Wraps an owned descriptor handed over by Kotlin.
 ///
-/// Adopting the descriptor means Java has already detached it and must not close
+/// Adopting the descriptor means Kotlin has already detached it and must not close
 /// it. Dropping this closes it exactly once.
 fn file_from_fd(fd: i32) -> io::Result<std::fs::File> {
     if fd < 0 {
-        return Err(io::Error::other("Java returned an invalid descriptor"));
+        return Err(io::Error::other(
+            "MediaStore would not open the item (Kotlin returned -1)",
+        ));
     }
     Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
@@ -116,43 +97,54 @@ pub struct MediaStoreSink;
 
 impl LibrarySink for MediaStoreSink {
     fn staging(&self, key: &Hash32) -> io::Result<(String, Box<dyn StagingFile + Send>)> {
+        let mut guard = jvm::attach().map_err(|e| jni_err("attach", e))?;
+        let env = &mut *guard;
+        let ctx = jvm::context().map_err(|e| jni_err("context", e))?;
+        let ctx_obj = unsafe { JObject::from_raw(ctx.as_raw()) };
+        let class = jvm::helper_class().map_err(|e| jni_err("helper class", e))?;
+
         // Named by content key so a restart reopens the same pending item, which
         // is what resume across a process death depends on (§13.4).
         //
-        // The display name is provisional. `publish` renames it to the real one,
+        // The display name is provisional. `commit` renames it to the real one,
         // because the descriptor is only known after ASSET_BEGIN and MediaStore
         // wants a name at insert time.
-        let env = jvm::attach().map_err(|e| jni_err("attach", e))?;
-        // `new_string` only needs a shared borrow; `call_static_method` needs a
-        // mutable one, which is why the helpers above hold `mut` and these do not.
         let name = env
             .new_string(format!("psync-{}.tmp", key.to_hex()))
             .map_err(|e| jni_err("new_string", e))?;
-        drop(env);
 
-        let uri = call_static_string(
-            "createPending",
-            "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
-            &[JValue::Object(&JObject::from(name))],
-        )?;
+        let out = env
+            .call_static_method(
+                &class,
+                "createPending",
+                "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
+                &[JValue::Object(&ctx_obj), JValue::Object(&name)],
+            )
+            .map_err(|e| jni_err("createPending", e))?;
+        let uri = take_string(env, "createPending", out)?;
 
-        let env = jvm::attach().map_err(|e| jni_err("attach", e))?;
-        let juri = env
-            .new_string(&uri)
-            .map_err(|e| jni_err("new_string", e))?;
-        drop(env);
-
-        let fd = call_static_int(
-            "openPendingFd",
-            "(Landroid/content/Context;Ljava/lang/String;)I",
-            &[JValue::Object(&JObject::from(juri))],
-        )?;
+        let juri = env.new_string(&uri).map_err(|e| jni_err("new_string", e))?;
+        let fd = env
+            .call_static_method(
+                &class,
+                "openPendingFd",
+                "(Landroid/content/Context;Ljava/lang/String;)I",
+                &[JValue::Object(&ctx_obj), JValue::Object(&juri)],
+            )
+            .map_err(|e| jni_err("openPendingFd", e))?
+            .i()
+            .map_err(|e| jni_err("openPendingFd", e))?;
 
         Ok((uri, Box::new(FdStaging::new(file_from_fd(fd)?))))
     }
 
     fn commit(&self, staging_ref: &str, descriptor: &AssetDescriptor) -> io::Result<String> {
-        let env = jvm::attach().map_err(|e| jni_err("attach", e))?;
+        let mut guard = jvm::attach().map_err(|e| jni_err("attach", e))?;
+        let env = &mut *guard;
+        let ctx = jvm::context().map_err(|e| jni_err("context", e))?;
+        let ctx_obj = unsafe { JObject::from_raw(ctx.as_raw()) };
+        let class = jvm::helper_class().map_err(|e| jni_err("helper class", e))?;
+
         let juri = env
             .new_string(staging_ref)
             .map_err(|e| jni_err("new_string", e))?;
@@ -167,36 +159,47 @@ impl LibrarySink for MediaStoreSink {
         let jmime = env
             .new_string(&descriptor.mime)
             .map_err(|e| jni_err("new_string", e))?;
-        drop(env);
 
         // `created_at` is passed so the gallery sorts the asset by when the photo
         // was taken, not when it arrived (§16).
-        call_static_string(
-            "publish",
-            "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JZ)\
-             Ljava/lang/String;",
-            &[
-                JValue::Object(&JObject::from(juri)),
-                JValue::Object(&JObject::from(jname)),
-                JValue::Object(&JObject::from(jmime)),
-                JValue::Long(descriptor.created_at),
-                JValue::Bool(u8::from(descriptor.media_type == MediaType::Video)),
-            ],
-        )
+        let out = env
+            .call_static_method(
+                &class,
+                "publish",
+                "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JZ)\
+                 Ljava/lang/String;",
+                &[
+                    JValue::Object(&ctx_obj),
+                    JValue::Object(&juri),
+                    JValue::Object(&jname),
+                    JValue::Object(&jmime),
+                    JValue::Long(descriptor.created_at),
+                    JValue::Bool(u8::from(descriptor.media_type == MediaType::Video)),
+                ],
+            )
+            .map_err(|e| jni_err("publish", e))?;
+        take_string(env, "publish", out)
     }
 
     fn abandon(&self, staging_ref: &str) -> io::Result<()> {
-        let env = jvm::attach().map_err(|e| jni_err("attach", e))?;
+        let mut guard = jvm::attach().map_err(|e| jni_err("attach", e))?;
+        let env = &mut *guard;
+        let ctx = jvm::context().map_err(|e| jni_err("context", e))?;
+        let ctx_obj = unsafe { JObject::from_raw(ctx.as_raw()) };
+        let class = jvm::helper_class().map_err(|e| jni_err("helper class", e))?;
+
         let juri = env
             .new_string(staging_ref)
             .map_err(|e| jni_err("new_string", e))?;
-        drop(env);
 
-        call_static_void(
+        env.call_static_method(
+            &class,
             "abandon",
             "(Landroid/content/Context;Ljava/lang/String;)V",
-            &[JValue::Object(&JObject::from(juri))],
+            &[JValue::Object(&ctx_obj), JValue::Object(&juri)],
         )
+        .map_err(|e| jni_err("abandon", e))?;
+        Ok(())
     }
 }
 
@@ -258,22 +261,32 @@ pub struct MediaStoreSource;
 
 impl LibrarySource for MediaStoreSource {
     fn open_original(&self, platform_asset_id: &str) -> io::Result<Box<dyn ReadSeek + Send>> {
-        let env = jvm::attach().map_err(|e| jni_err("attach", e))?;
+        let mut guard = jvm::attach().map_err(|e| jni_err("attach", e))?;
+        let env = &mut *guard;
+        let ctx = jvm::context().map_err(|e| jni_err("context", e))?;
+        let ctx_obj = unsafe { JObject::from_raw(ctx.as_raw()) };
+        let class = jvm::helper_class().map_err(|e| jni_err("helper class", e))?;
+
         let jid = env
             .new_string(platform_asset_id)
             .map_err(|e| jni_err("new_string", e))?;
-        drop(env);
 
-        let fd = call_static_int(
-            "openOriginalFd",
-            "(Landroid/content/Context;Ljava/lang/String;)I",
-            &[JValue::Object(&JObject::from(jid))],
-        )?;
+        let fd = env
+            .call_static_method(
+                &class,
+                "openOriginalFd",
+                "(Landroid/content/Context;Ljava/lang/String;)I",
+                &[JValue::Object(&ctx_obj), JValue::Object(&jid)],
+            )
+            .map_err(|e| jni_err("openOriginalFd", e))?
+            .i()
+            .map_err(|e| jni_err("openOriginalFd", e))?;
+
         Ok(Box::new(file_from_fd(fd)?))
     }
 }
 
-/// One row of the library, as the Java helper reports it.
+/// One row of the library, as the Kotlin helper reports it.
 #[derive(Debug, serde::Deserialize)]
 pub struct ScannedRow {
     pub id: String,
@@ -293,15 +306,29 @@ pub struct ScannedRow {
 ///
 /// Returns JSON rather than a stream of JNI objects: one call and one parse is far
 /// cheaper than thousands of JNI round trips, and §21 forbids holding the library
-/// in memory only in the sense of *media bytes* — a catalogue row is tiny. For a
-/// 500,000-asset library this should become paged, and the Java side already
-/// supports a limit and offset for that reason.
+/// in memory only in the sense of *media bytes* — a catalogue row is tiny. The
+/// Kotlin side takes a limit and offset so a large library is walked in pages.
 pub fn enumerate(limit: i32, offset: i32) -> io::Result<Vec<ScannedRow>> {
-    let json = call_static_string(
-        "enumerate",
-        "(Landroid/content/Context;II)Ljava/lang/String;",
-        &[JValue::Int(limit), JValue::Int(offset)],
-    )?;
+    let mut guard = jvm::attach().map_err(|e| jni_err("attach", e))?;
+    let env = &mut *guard;
+    let ctx = jvm::context().map_err(|e| jni_err("context", e))?;
+    let ctx_obj = unsafe { JObject::from_raw(ctx.as_raw()) };
+    let class = jvm::helper_class().map_err(|e| jni_err("helper class", e))?;
+
+    let out = env
+        .call_static_method(
+            &class,
+            "enumerate",
+            "(Landroid/content/Context;II)Ljava/lang/String;",
+            &[
+                JValue::Object(&ctx_obj),
+                JValue::Int(limit),
+                JValue::Int(offset),
+            ],
+        )
+        .map_err(|e| jni_err("enumerate", e))?;
+    let json = take_string(env, "enumerate", out)?;
+
     serde_json::from_str(&json)
         .map_err(|e| io::Error::other(format!("cannot parse the library listing: {e}")))
 }

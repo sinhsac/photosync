@@ -4,7 +4,7 @@
 //! This is the first point at which `app_info.md` §24 criteria 1, 2 and 4 can be
 //! observed rather than argued about.
 
-use crate::cutstream::CutAfter;
+use crate::cutstream::{CutAfter, Mode};
 use crate::fsprovider::{DirSink, DirSource};
 use photosync_core::catalog::{self, FilterArgs, ScannedAsset};
 use photosync_core::identity as core_identity;
@@ -12,9 +12,8 @@ use photosync_core::model::MediaType;
 use photosync_core::pairing::{CodeSession, PairingCode};
 use photosync_core::{db, session};
 use photosync_net::identity::Identity;
-use photosync_net::link::{Link, Timeouts};`nuse photosync_net::orchestrator::{
-    run_receiver, run_sender, ReceiverAuth, SenderAuth, Totals,
-};
+use photosync_net::link::{Link, Timeouts};
+use photosync_net::orchestrator::{run_receiver, run_sender, ReceiverAuth, SenderAuth, Totals};
 use photosync_net::tls::{client_config, server_config, Pinning};
 use photosync_net::tls_stream::{ServerName, TlsAcceptor, TlsConnector};
 use std::fs;
@@ -148,7 +147,9 @@ async fn drive(src_dir: &Path, dst_dir: &Path) -> photosync_core::Result<()> {
     // session-level case here.
     let conn = db::open(&receiver_db)?;
     let swept = session::sweep_stale_active(&conn)?;
-    println!("\nstartup sweep   : {swept} session(s) were left active (expected 0 after clean runs)");
+    println!(
+        "\nstartup sweep   : {swept} session(s) were left active (expected 0 after clean runs)"
+    );
     println!(
         "resume offered  : {}",
         match session::latest_resumable(&conn)? {
@@ -260,6 +261,41 @@ async fn drive_resume(src_dir: &Path, dst_dir: &Path) -> photosync_core::Result<
         }
     }
 
+    // --- leg 1b: a peer that freezes without closing -----------------------
+    //
+    // The failure mode the §8 heartbeat exists for. Nothing is closed, so the
+    // receiver has no notification at all; only its own read deadline can free
+    // it. Timed here, because "did not hang" is the whole assertion.
+    let stall_started = std::time::Instant::now();
+    let stalled = leg_with(
+        &sender_db,
+        &receiver_db,
+        dst_dir,
+        &receiver_identity,
+        &sender_identity,
+        Auth::Paired,
+        Some((1024, Mode::Stall)),
+        Timeouts::fast(),
+    )
+    .await;
+    let stall_elapsed = stall_started.elapsed();
+    let fast = Timeouts::fast();
+    println!("\nleg 1b (peer freezes, socket left open)");
+    match &stalled {
+        Ok(r) => println!(
+            "  receiver returned after {:?} (deadline {:?}) transferred={} — {}",
+            stall_elapsed,
+            fast.read,
+            r.receiver.items_done,
+            if stall_elapsed < fast.read * 8 {
+                "OK, the deadline freed it"
+            } else {
+                "SLOW, check the deadline"
+            }
+        ),
+        Err(e) => println!("  receiver errored instead of interrupting: {e}"),
+    }
+
     // --- leg 2: reconnect with no code ------------------------------------
     let leg2 = leg(
         &sender_db,
@@ -323,6 +359,11 @@ enum Auth {
     Paired,
 }
 
+/// Same as [`catalogue`], for the discovery harness.
+pub fn catalogue_pub(sender_db: &Path, src_dir: &Path) -> photosync_core::Result<usize> {
+    catalogue(sender_db, src_dir)
+}
+
 /// Catalogues and hashes a directory into a sender database.
 fn catalogue(sender_db: &Path, src_dir: &Path) -> photosync_core::Result<usize> {
     let conn = db::open(sender_db)?;
@@ -364,6 +405,30 @@ async fn leg(
     sender_identity: &Identity,
     auth: Auth,
     cut_after: Option<u64>,
+) -> photosync_core::Result<SessionReport> {
+    leg_with(
+        sender_db,
+        receiver_db,
+        dst_dir,
+        receiver_identity,
+        sender_identity,
+        auth,
+        cut_after.map(|n| (n, Mode::Cut)),
+        Timeouts::default(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn leg_with(
+    sender_db: &Path,
+    receiver_db: &Path,
+    dst_dir: &Path,
+    receiver_identity: &Identity,
+    sender_identity: &Identity,
+    auth: Auth,
+    fault: Option<(u64, Mode)>,
+    timeouts: Timeouts,
 ) -> photosync_core::Result<SessionReport> {
     let std_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     std_listener.set_nonblocking(true)?;
@@ -408,7 +473,7 @@ async fn leg(
         rt.block_on(async move {
             let listener = TcpListener::from_std(std_listener).expect("listener");
             let (tcp, _) = listener.accept().await.expect("accept");
-            let mut tls = TlsAcceptor::from(server_cfg)
+            let tls = TlsAcceptor::from(server_cfg)
                 .accept(tcp)
                 .await
                 .map_err(|e| format!("tls accept: {e}"))?;
@@ -423,11 +488,13 @@ async fn leg(
 
             let auth = match owned_code_session.as_mut() {
                 Some(cs) => ReceiverAuth::Code(cs),
-                None => ReceiverAuth::Paired { expected: sender_fp },
+                None => ReceiverAuth::Paired {
+                    expected: sender_fp,
+                },
             };
 
             run_receiver(
-                &mut Link::new(tls, Timeouts::default()),
+                &mut Link::new(tls, timeouts),
                 &conn,
                 &sink,
                 receiver_fp,
@@ -457,7 +524,8 @@ async fn leg(
 
     // Wrapping the TLS stream, so the cut lands on a protocol write rather than
     // inside a TLS record. That is what a lost uplink looks like to this layer.
-    let mut wrapped = CutAfter::new(tls, cut_after.unwrap_or(u64::MAX));
+    let (budget, mode) = fault.unwrap_or((u64::MAX, Mode::Cut));
+    let mut wrapped = Link::new(CutAfter::with_mode(tls, budget, mode), timeouts);
     let sender_result = run_sender(
         &mut wrapped,
         &conn,
@@ -480,8 +548,9 @@ async fn leg(
     // half-open connection, and nothing at the socket layer resolves it. That is
     // what §8's heartbeat with a 30s timeout is for. Until that is wired up, a
     // peer that vanishes without closing will hang a session indefinitely.
-    let was_cut = wrapped.was_cut();
-    drop(wrapped);
+    let cut_stream = wrapped.into_inner();
+    let was_cut = cut_stream.was_cut();
+    drop(cut_stream);
 
     let receiver_result = receiver_thread.join().expect("receiver thread");
 
@@ -545,7 +614,7 @@ async fn one_session(
         rt.block_on(async move {
             let listener = TcpListener::from_std(std_listener).expect("listener");
             let (tcp, _) = listener.accept().await.expect("accept");
-            let mut tls = TlsAcceptor::from(server_cfg)
+            let tls = TlsAcceptor::from(server_cfg)
                 .accept(tcp)
                 .await
                 .expect("tls accept");
@@ -577,7 +646,7 @@ async fn one_session(
     });
 
     let tcp = TcpStream::connect(addr).await?;
-    let mut tls = TlsConnector::from(client_cfg)
+    let tls = TlsConnector::from(client_cfg)
         .connect(ServerName::try_from("127.0.0.1").expect("name"), tcp)
         .await?;
     let peer_fp = client_observed.get().expect("server certificate");
@@ -585,7 +654,8 @@ async fn one_session(
     let conn = db::open(sender_db)?;
     let source = DirSource;
     let sender_result = run_sender(
-        &mut Link::new(tls, Timeouts::default()),`n        &conn,
+        &mut Link::new(tls, Timeouts::default()),
+        &conn,
         &source,
         sender_identity.fingerprint(),
         peer_fp,

@@ -50,7 +50,8 @@ pub fn answer_have_query(
     batch: &[HaveQueryItem],
 ) -> Result<Vec<HaveResponseItem>> {
     let mut by_full = conn.prepare("SELECT 1 FROM received_asset WHERE full_hash = ?1")?;
-    let mut by_quick = conn.prepare("SELECT 1 FROM received_asset WHERE quick_hash = ?1 LIMIT 1")?;
+    let mut by_quick =
+        conn.prepare("SELECT 1 FROM received_asset WHERE quick_hash = ?1 LIMIT 1")?;
 
     let mut out = Vec::with_capacity(batch.len());
     for item in batch {

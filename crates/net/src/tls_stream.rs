@@ -6,5 +6,7 @@
 //! nothing like a version problem.
 
 pub use rustls::pki_types::ServerName;
-pub use tokio_rustls::{client::TlsStream as ClientTlsStream, server::TlsStream as ServerTlsStream};
+pub use tokio_rustls::{
+    client::TlsStream as ClientTlsStream, server::TlsStream as ServerTlsStream,
+};
 pub use tokio_rustls::{TlsAcceptor, TlsConnector};

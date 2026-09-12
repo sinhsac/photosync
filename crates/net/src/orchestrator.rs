@@ -139,15 +139,13 @@ where
         other => return Err(Error::Unexpected(format!("{other:?}"))),
     };
 
-    link.send(
-        Message::Hello {
-            major: PROTOCOL_MAJOR,
-            minor: PROTOCOL_MINOR,
-            device_name: device_name.to_string(),
-            platform: std::env::consts::OS.to_string(),
-            cert_fingerprint: own_fingerprint,
-        },
-    )
+    link.send(Message::Hello {
+        major: PROTOCOL_MAJOR,
+        minor: PROTOCOL_MINOR,
+        device_name: device_name.to_string(),
+        platform: std::env::consts::OS.to_string(),
+        cert_fingerprint: own_fingerprint,
+    })
     .await?;
 
     match auth {
@@ -168,11 +166,9 @@ where
 
         ReceiverAuth::Code(code_session) => {
             let challenge = pairing::AuthChallenge::new(peer_fingerprint, own_fingerprint);
-            link.send(
-                Message::AuthChallenge {
-                    nonce: challenge.nonce,
-                },
-            )
+            link.send(Message::AuthChallenge {
+                nonce: challenge.nonce,
+            })
             .await?;
 
             let presented = match link.read().await?.message {
@@ -194,11 +190,9 @@ where
                 return Err(Error::AuthFailed);
             }
 
-            link.send(
-                Message::Authenticate {
-                    proof: challenge.proof(code_session.code(), pairing::ProofRole::Receiver),
-                },
-            )
+            link.send(Message::Authenticate {
+                proof: challenge.proof(code_session.code(), pairing::ProofRole::Receiver),
+            })
             .await?;
         }
     }
@@ -223,15 +217,13 @@ async fn sender_handshake<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    link.send(
-        Message::Hello {
-            major: PROTOCOL_MAJOR,
-            minor: PROTOCOL_MINOR,
-            device_name: device_name.to_string(),
-            platform: std::env::consts::OS.to_string(),
-            cert_fingerprint: own_fingerprint,
-        },
-    )
+    link.send(Message::Hello {
+        major: PROTOCOL_MAJOR,
+        minor: PROTOCOL_MINOR,
+        device_name: device_name.to_string(),
+        platform: std::env::consts::OS.to_string(),
+        cert_fingerprint: own_fingerprint,
+    })
     .await?;
 
     let peer_name = match link.read().await?.message {
@@ -260,11 +252,9 @@ where
         // Both fingerprints come from the TLS handshake, never from Hello (§9.3).
         let challenge =
             pairing::AuthChallenge::from_nonce(nonce, own_fingerprint, peer_fingerprint);
-        link.send(
-            Message::Authenticate {
-                proof: challenge.proof(code, pairing::ProofRole::Sender),
-            },
-        )
+        link.send(Message::Authenticate {
+            proof: challenge.proof(code, pairing::ProofRole::Sender),
+        })
         .await?;
 
         match link.read().await?.message {
@@ -273,9 +263,7 @@ where
                     .verify(code, pairing::ProofRole::Receiver, &proof)
                     .map_err(|_| Error::AuthFailed)?;
             }
-            Message::Abort { reason, detail } => {
-                return Err(Error::PeerAborted { reason, detail })
-            }
+            Message::Abort { reason, detail } => return Err(Error::PeerAborted { reason, detail }),
             other => return Err(Error::Unexpected(format!("{other:?}"))),
         }
     }
@@ -292,12 +280,10 @@ async fn abort<S>(link: &mut Link<S>, reason: AbortReason, detail: &str) -> Resu
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    link.send(
-        Message::Abort {
-            reason,
-            detail: detail.to_string(),
-        },
-    )
+    link.send(Message::Abort {
+        reason,
+        detail: detail.to_string(),
+    })
     .await?;
     Ok(())
 }
@@ -350,7 +336,7 @@ where
             bytes_received: s.bytes_received,
         })
         .collect();
-    link.send( Message::SessionResume { in_flight }).await?;
+    link.send(Message::SessionResume { in_flight }).await?;
 
     let mut totals = Totals::default();
     let mut current: Option<Active> = None;
@@ -407,17 +393,15 @@ where
                     })
                     .collect();
                 let answers = inbound::answer_have_query(conn, &batch)?;
-                link.send(
-                    Message::HaveResponse {
-                        items: answers
-                            .into_iter()
-                            .map(|a| HaveResponseEntry {
-                                id: a.id,
-                                verdict: a.verdict,
-                            })
-                            .collect(),
-                    },
-                )
+                link.send(Message::HaveResponse {
+                    items: answers
+                        .into_iter()
+                        .map(|a| HaveResponseEntry {
+                            id: a.id,
+                            verdict: a.verdict,
+                        })
+                        .collect(),
+                })
                 .await?;
             }
 
@@ -465,7 +449,12 @@ where
                 let outcome = match verdict {
                     ChunkVerdict::Accepted { bytes_received } => {
                         // Durable first, then persisted, then acknowledged.
-                        inbound::advance(conn, &sess.id, &active.descriptor.quick_hash, bytes_received)?;
+                        inbound::advance(
+                            conn,
+                            &sess.id,
+                            &active.descriptor.quick_hash,
+                            bytes_received,
+                        )?;
                         ChunkOutcome::Accepted { bytes_received }
                     }
                     ChunkVerdict::Corrupt => ChunkOutcome::Corrupt,
@@ -473,7 +462,7 @@ where
                         ChunkOutcome::Misaligned { expected_offset }
                     }
                 };
-                link.send( Message::ChunkAck { offset, outcome }).await?;
+                link.send(Message::ChunkAck { offset, outcome }).await?;
             }
 
             Message::AssetEnd { full_hash } => {
@@ -524,7 +513,7 @@ where
                         AssetOutcome::HashMismatch
                     }
                 };
-                link.send( Message::AssetAck { outcome }).await?;
+                link.send(Message::AssetAck { outcome }).await?;
             }
 
             Message::SessionEnd { .. } => {
@@ -606,14 +595,12 @@ where
             .unwrap_or(0)
     };
 
-    link.send(
-        Message::SessionBegin {
-            role: SessionRole::Sender,
-            session_id: sess.id.clone(),
-            est_items: counters.remaining,
-            est_bytes: 0,
-        },
-    )
+    link.send(Message::SessionBegin {
+        role: SessionRole::Sender,
+        session_id: sess.id.clone(),
+        est_items: counters.remaining,
+        est_bytes: 0,
+    })
     .await?;
 
     let mut totals = Totals::default();
@@ -634,7 +621,7 @@ where
                 full_hash: c.descriptor.full_hash,
             })
             .collect();
-        link.send( Message::HaveQuery { items: query }).await?;
+        link.send(Message::HaveQuery { items: query }).await?;
 
         let answers = match link.read().await?.message {
             Message::HaveResponse { items } => items,
@@ -655,7 +642,13 @@ where
                         .descriptor
                         .full_hash
                         .expect("Skip is only possible when a full hash was supplied");
-                    record_delivered(conn, peer.peer_id, candidate.id, &full, &candidate.descriptor.quick_hash)?;
+                    record_delivered(
+                        conn,
+                        peer.peer_id,
+                        candidate.id,
+                        &full,
+                        &candidate.descriptor.quick_hash,
+                    )?;
                     totals.items_skipped += 1;
                     progressed = true;
                 }
@@ -724,14 +717,12 @@ where
         }
     }
 
-    link.send(
-        Message::SessionEnd {
-            items_done: totals.items_done,
-            items_skipped: totals.items_skipped,
-            items_failed: totals.items_failed,
-            bytes_done: totals.bytes_done,
-        },
-    )
+    link.send(Message::SessionEnd {
+        items_done: totals.items_done,
+        items_skipped: totals.items_skipped,
+        items_failed: totals.items_failed,
+        bytes_done: totals.bytes_done,
+    })
     .await?;
     session::set_state(conn, &sess.id, SessionState::Done)?;
     Ok(totals)
@@ -760,12 +751,10 @@ where
     session::enqueue(conn, session_id, candidate.id, size)?;
 
     for attempt in 1..=session::MAX_ASSET_ATTEMPTS {
-        link.send(
-            Message::AssetBegin {
-                descriptor: candidate.descriptor.clone(),
-                resume_offset: proposed_offset,
-            },
-        )
+        link.send(Message::AssetBegin {
+            descriptor: candidate.descriptor.clone(),
+            resume_offset: proposed_offset,
+        })
         .await?;
 
         // Opening an original can block on the platform library, and on iOS it
@@ -787,13 +776,12 @@ where
 
             loop {
                 link.write(&Frame::with_payload(
-                        Message::Chunk {
-                            offset: pending.offset,
-                            hash: pending.hash,
-                        },
-                        pending.payload.clone(),
-                    ),
-                )
+                    Message::Chunk {
+                        offset: pending.offset,
+                        hash: pending.hash,
+                    },
+                    pending.payload.clone(),
+                ))
                 .await?;
 
                 match link.read().await?.message {
@@ -852,7 +840,7 @@ where
         let full_hash = out
             .full_hash()
             .ok_or_else(|| Error::Unexpected("asset finished without a hash".into()))?;
-        link.send( Message::AssetEnd { full_hash }).await?;
+        link.send(Message::AssetEnd { full_hash }).await?;
 
         match link.read().await?.message {
             Message::AssetAck { outcome } => match outcome {

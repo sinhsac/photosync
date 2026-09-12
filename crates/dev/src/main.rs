@@ -21,6 +21,7 @@ use photosync_core::{db, Result};
 use std::fs::{self, File};
 
 mod cutstream;
+mod discover;
 mod fsprovider;
 mod handshake;
 mod sync;
@@ -59,6 +60,11 @@ fn main() -> ExitCode {
             (Some(src), Some(dst)) => sync::run(Path::new(src), Path::new(dst)),
             _ => usage("sync needs a source and a destination directory"),
         },
+        Some("netinfo") => discover::probe(),
+        Some("discover") => match (args.get(1), args.get(2)) {
+            (Some(src), Some(dst)) => discover::run(Path::new(src), Path::new(dst)),
+            _ => usage("discover needs a source and a destination directory"),
+        },
         Some("resume-session") => match (args.get(1), args.get(2)) {
             (Some(src), Some(dst)) => sync::run_resume(Path::new(src), Path::new(dst)),
             _ => usage("resume-session needs a source and a destination directory"),
@@ -95,6 +101,9 @@ fn usage(msg: &str) -> Result<()> {
     eprintln!("  psdev sync <src> <dst>  full end-to-end sync between two libraries");
     eprintln!("  psdev resume-session <src> <dst>");
     eprintln!("                          cut a sync mid-asset, reconnect with no code, resume");
+    eprintln!("  psdev netinfo           what discovery can see on this machine");
+    eprintln!("  psdev discover <src> <dst>");
+    eprintln!("                          announce, discover, then sync with no typed address");
     std::process::exit(2);
 }
 
@@ -277,7 +286,9 @@ fn cmd_pairing() -> Result<()> {
     check(
         "proof from another session (fresh nonce)",
         false,
-        other.verify(&code, ProofRole::Sender, &sender_proof).is_ok(),
+        other
+            .verify(&code, ProofRole::Sender, &sender_proof)
+            .is_ok(),
     );
 
     // --- attempt budget ------------------------------------------------------
@@ -287,8 +298,11 @@ fn cmd_pairing() -> Result<()> {
     let real = PairingCode::parse(budget.code().as_str()).expect("well formed");
     let ch = AuthChallenge::new(sender_fp, receiver_fp);
     let wrong = ch.proof(
-        &PairingCode::parse(&format!("{:06}", 1 + real.as_str().parse::<u32>().unwrap() % 999_999))
-            .expect("well formed"),
+        &PairingCode::parse(&format!(
+            "{:06}",
+            1 + real.as_str().parse::<u32>().unwrap() % 999_999
+        ))
+        .expect("well formed"),
         ProofRole::Sender,
     );
 
@@ -296,7 +310,11 @@ fn cmd_pairing() -> Result<()> {
         let outcome = budget.verify(&ch, ProofRole::Sender, &wrong, 0);
         println!(
             "wrong proof #{attempt:<32} {:<9} attempts_left={} live={}",
-            if outcome.is_ok() { "accepted" } else { "rejected" },
+            if outcome.is_ok() {
+                "accepted"
+            } else {
+                "rejected"
+            },
             budget.attempts_left(),
             budget.is_live(0)
         );
@@ -420,7 +438,11 @@ fn cmd_transfer(file: &Path, mode: Option<&str>) -> Result<()> {
     let mode = mode.unwrap_or("all");
     let size = fs::metadata(file)?.len();
     println!("file  : {} ({} B)", file.display(), size);
-    println!("chunks: {} × {} B", chunk::chunk_count(size), chunk::CHUNK_LEN);
+    println!(
+        "chunks: {} × {} B",
+        chunk::chunk_count(size),
+        chunk::CHUNK_LEN
+    );
 
     // The truth we must reproduce, computed independently.
     let expected = {
@@ -461,17 +483,30 @@ fn cmd_transfer(file: &Path, mode: Option<&str>) -> Result<()> {
 /// per-chunk hash still passes, and only the whole-file hash would catch it —
 /// after the entire asset had been transferred.
 fn run_misaligned(file: &Path, size: u64) -> Result<()> {
+    // Needs three chunks: accept one, skip one, offer the third.
+    if chunk::chunk_count(size) < 3 {
+        println!(
+            "misalign: skipped, needs at least 3 chunks and this file has {}",
+            chunk::chunk_count(size)
+        );
+        return Ok(());
+    }
+
     let (path, staging) = staging_for("misaligned")?;
     let mut out = OutboundAsset::begin(File::open(file)?, size)?;
     let mut inb = InboundAsset::begin(staging, size)?;
 
     // Accept the first chunk normally.
-    let first = out.next_chunk()?.expect("at least one chunk");
+    let Some(first) = out.next_chunk()? else {
+        return Ok(());
+    };
     let _ = inb.accept_chunk(&first)?;
 
     // Now skip one: offer chunk 3 while the receiver is waiting for chunk 1.
     let _skipped = out.next_chunk()?;
-    let ahead = out.next_chunk()?.expect("third chunk");
+    let Some(ahead) = out.next_chunk()? else {
+        return Ok(());
+    };
 
     let verdict = inb.accept_chunk(&ahead)?;
     let expected_offset = inb.resume_offset();
@@ -542,7 +577,9 @@ fn run_cut(file: &Path, size: u64, expected: Hash32) -> Result<()> {
         let mut out = OutboundAsset::begin(File::open(file)?, size)?;
         let mut inb = InboundAsset::begin(staging, size)?;
         for _ in 0..cut_after {
-            let Some(chunk) = out.next_chunk()? else { break };
+            let Some(chunk) = out.next_chunk()? else {
+                break;
+            };
             if let ChunkVerdict::Accepted { bytes_received } = inb.accept_chunk(&chunk)? {
                 // The caller persists only after Accepted. Same ordering the
                 // real receiver uses.
@@ -627,10 +664,7 @@ fn run_corrupt(file: &Path, size: u64, expected: Hash32) -> Result<()> {
             }
             // Nothing was written, so the offset did not move. Resend the
             // original chunk, not a freshly read one.
-            if !matches!(
-                inb.accept_chunk(&chunk)?,
-                ChunkVerdict::Accepted { .. }
-            ) {
+            if !matches!(inb.accept_chunk(&chunk)?, ChunkVerdict::Accepted { .. }) {
                 println!("corrupt : UNEXPECTED, retry of a good chunk was refused");
                 return Ok(());
             }
@@ -932,9 +966,7 @@ fn describe(path: &Path) -> Option<ScannedAsset> {
         width: None,
         height: None,
         duration_ms: None,
-        display_name: path
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned()),
+        display_name: path.file_name().map(|s| s.to_string_lossy().into_owned()),
         resource_group_id: None,
         is_local: true,
     })

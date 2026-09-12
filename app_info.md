@@ -247,9 +247,19 @@ Also outside our control: router AP isolation blocks all peer-to-peer traffic. D
 - TCP. One control stream plus N data streams (start with N=1, make it configurable; 3–6 is the range field-tested by Immich's mobile uploader for phone-class hardware).
 - Length-prefixed binary frames with a small JSON/CBOR header per message.
 - The transport sits behind a `TransportProvider` interface. Wi-Fi Direct or USB can be added later without touching the sync engine.
-- A heartbeat on the control stream, 10s interval, 30s timeout. This is what frees a receiver slot after an unclean disconnect (§9.6).
+- **Liveness on the control stream: heartbeat every 10s, and a deadline on both reads *and* writes at 30s.**
 
-  **Not optional, and the reason is concrete.** A peer that stops sending without closing its socket leaves a half-open connection, and nothing at the TCP layer resolves that: the other side blocks on a read forever. This was reproduced accidentally while building `psdev resume-session` — the injected cut only made writes fail, the socket stayed open, and the receiver hung indefinitely until the stream was explicitly dropped. A phone going out of range, running out of battery, or being force-killed produces exactly that shape. Until the heartbeat is implemented, an interrupted session can hang rather than becoming resumable.
+  Not optional, and the reason is concrete. A peer that stops sending without closing its socket leaves a half-open connection, and nothing at the TCP layer resolves that: the other side blocks forever. A phone going out of range, running out of battery, or being force-killed produces exactly that shape. This was first reproduced by accident while building `psdev resume-session`, where an injected write failure left the socket open and the receiver hung until the stream was explicitly dropped.
+
+  Three parts, and they only work together:
+
+  - **Read deadline.** No read waits longer than 30s for anything at all to arrive.
+  - **Heartbeats.** Both sides emit one when they have been quiet, so a peer that is legitimately busy is not mistaken for a dead one. Heartbeats are absorbed by the link layer and never reach the protocol state machines. The deadline is there to detect silence, not slowness: a peer that keeps heartbeating may take as long as it likes.
+  - **Write deadline.** A read deadline alone is insufficient. If the peer freezes while its receive window is full, our writes block rather than failing, and waiting to read never helps because we never get far enough to read. Found by injecting a frozen peer: the receiver timed out correctly while the sender parked forever on a write.
+
+  Emit a keepalive around anything slow and invisible to the peer: opening an original (which on iOS may materialise an iCloud file), committing into the photo library, and rebuilding a digest on resume.
+
+  **Known limit.** The resume rehash is a single blocking read of the whole partial (§13.4) with no opportunity to heartbeat from inside it, so a partial large enough that rehashing exceeds the read deadline will still trip the peer's timeout. The fix is to move that work off the I/O path and keep the link alive while it runs. Until then the deadline bounds how large a partial can be resumed, and that bound should be measured on real hardware before it is assumed comfortable.
 - On iOS, rebind all sockets when the app returns to the foreground. Sockets die silently on suspend and cannot be probed for liveness, so rebinding unconditionally is the only reliable option.
 
 ---
@@ -1065,6 +1075,15 @@ final state
 ```
 
 Note the partial sits exactly on a chunk boundary. That is the invariant from §13.4 holding: `bytes_received` never names anything but verified, flushed bytes.
+
+It also covers the failure mode that has no notification at all — a peer that freezes with its socket still open:
+
+```
+leg 1b (peer freezes, socket left open)
+  receiver returned after 2.37s (deadline 1.5s) — OK, the deadline freed it
+```
+
+Shortened deadlines are used for that leg so the behaviour can be observed in seconds. Without §8's deadlines this leg hangs forever, which is how the requirement was found in the first place.
 
 `transfer` covers four cases, three of which are impractical to trigger deliberately on hardware:
 

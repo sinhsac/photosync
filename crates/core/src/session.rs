@@ -232,11 +232,7 @@ pub fn enqueue(
 }
 
 /// Reads one in-flight row.
-pub fn find(
-    conn: &Connection,
-    session_id: &str,
-    local_asset_id: i64,
-) -> Result<Option<Transfer>> {
+pub fn find(conn: &Connection, session_id: &str, local_asset_id: i64) -> Result<Option<Transfer>> {
     let row = conn
         .query_row(
             "SELECT session_id, local_asset_id, state, bytes_transferred,
@@ -279,12 +275,7 @@ pub fn in_flight(conn: &Connection, session_id: &str) -> Result<Vec<Transfer>> {
 ///
 /// Monotonic by construction: a lower value is ignored rather than written, so a
 /// late-arriving duplicate acknowledgement cannot rewind progress.
-pub fn advance(
-    conn: &Connection,
-    session_id: &str,
-    local_asset_id: i64,
-    bytes: u64,
-) -> Result<()> {
+pub fn advance(conn: &Connection, session_id: &str, local_asset_id: i64, bytes: u64) -> Result<()> {
     conn.execute(
         "UPDATE transfer
             SET state = :state,

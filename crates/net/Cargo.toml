@@ -6,9 +6,17 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Interface enumeration. std has none, and discovery needs one socket per
+# interface (§7.2), which is what makes the hotspot case work.
+if-addrs = "0.13"
 photosync-core = { path = "../core" }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Raw socket options: SO_REUSEPORT, IP_MULTICAST_IF, TTL. tokio's UdpSocket does
+# not expose per-interface egress pinning.
+socket2 = { version = "0.5", features = ["all"] }
 # ring rather than aws-lc-rs: it cross-compiles to all Android ABIs and iOS
 # without extra toolchain setup, which matters more here than raw speed.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }

@@ -51,7 +51,11 @@ impl PairingCode {
         loop {
             let v = rng.next_u32();
             if v < BOUND {
-                return Self(format!("{:0width$}", v % LIMIT, width = CODE_DIGITS as usize));
+                return Self(format!(
+                    "{:0width$}",
+                    v % LIMIT,
+                    width = CODE_DIGITS as usize
+                ));
             }
         }
     }

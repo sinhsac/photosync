@@ -51,7 +51,14 @@ async fn run_all() {
     let code = PairingCode::parse(code_session.code().as_str()).expect("well formed");
     println!("code        : {}\n", code_session.code().display_grouped());
 
-    let result = one_exchange(&receiver, &sender, &code, Pinning::FirstContact, &mut code_session).await;
+    let result = one_exchange(
+        &receiver,
+        &sender,
+        &code,
+        Pinning::FirstContact,
+        &mut code_session,
+    )
+    .await;
     report("honest pair, first contact", &result, true);
 
     // --- 2. man in the middle, relaying ------------------------------------
@@ -123,7 +130,10 @@ fn report(what: &str, leg: &Leg, expect_ok: bool) {
         if ok { "OK" } else { "WRONG" }
     );
     if let Leg::Ok { peer } = leg {
-        println!("  peer fingerprint observed in the handshake: {}", peer.short());
+        println!(
+            "  peer fingerprint observed in the handshake: {}",
+            peer.short()
+        );
     }
 }
 
@@ -154,8 +164,10 @@ async fn relay_mitm(receiver: &Identity, sender: &Identity, attacker: &Identity)
     // Attacker's listener, which the sender will dial.
     let mitm_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let mitm_addr = mitm_listener.local_addr().expect("addr");
-    let (mitm_server_cfg, _) = server_config(attacker, Pinning::FirstContact).expect("server config");
-    let (mitm_client_cfg, _) = client_config(attacker, Pinning::FirstContact).expect("client config");
+    let (mitm_server_cfg, _) =
+        server_config(attacker, Pinning::FirstContact).expect("server config");
+    let (mitm_client_cfg, _) =
+        client_config(attacker, Pinning::FirstContact).expect("client config");
 
     let mitm_task = tokio::spawn(async move {
         let Ok((tcp, _)) = mitm_listener.accept().await else {
@@ -221,7 +233,8 @@ async fn one_exchange(
 
     let (server_cfg, server_observed) =
         server_config(server_identity, Pinning::FirstContact).expect("server config");
-    let (client_cfg, client_observed) = client_config(client_identity, pinning).expect("client config");
+    let (client_cfg, client_observed) =
+        client_config(client_identity, pinning).expect("client config");
 
     let server_fp = server_identity.fingerprint();
     let server_task = tokio::spawn(serve(
@@ -320,10 +333,7 @@ async fn serve(
         return Leg::AuthRefused;
     };
 
-    if challenge
-        .verify(&code, ProofRole::Sender, &proof)
-        .is_err()
-    {
+    if challenge.verify(&code, ProofRole::Sender, &proof).is_err() {
         let _ = write_message(
             &mut tls,
             Message::Abort {

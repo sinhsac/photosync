@@ -37,8 +37,8 @@ impl Identity {
         let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
             .map_err(|e| Error::Generate(e.to_string()))?;
 
-        let mut params =
-            rcgen::CertificateParams::new(Vec::<String>::new()).map_err(|e| Error::Generate(e.to_string()))?;
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new())
+            .map_err(|e| Error::Generate(e.to_string()))?;
         let mut dn = rcgen::DistinguishedName::new();
         dn.push(rcgen::DnType::CommonName, "PhotoSync Device");
         params.distinguished_name = dn;

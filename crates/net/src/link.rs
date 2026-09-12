@@ -31,6 +31,15 @@ pub struct Timeouts {
     /// Must be comfortably larger than `heartbeat`, or a peer that is merely
     /// quiet gets dropped between its own keepalives.
     pub read: Duration,
+
+    /// Give up on a write that cannot complete.
+    ///
+    /// A read deadline alone is not enough. If the peer freezes while its receive
+    /// window is full, our writes block instead of failing, and no amount of
+    /// waiting to *read* helps because we never get far enough to read. Found by
+    /// injecting a frozen peer in the harness, where the sender parked forever on
+    /// a write while the receiver correctly timed out.
+    pub write: Duration,
 }
 
 impl Default for Timeouts {
@@ -38,6 +47,7 @@ impl Default for Timeouts {
         Self {
             heartbeat: Duration::from_secs(10),
             read: Duration::from_secs(30),
+            write: Duration::from_secs(30),
         }
     }
 }
@@ -49,6 +59,7 @@ impl Timeouts {
         Self {
             heartbeat: Duration::from_millis(200),
             read: Duration::from_millis(1500),
+            write: Duration::from_millis(1500),
         }
     }
 }
@@ -94,9 +105,11 @@ where
         }
     }
 
-    /// Writes a frame.
+    /// Writes a frame, bounded by [`Timeouts::write`].
     pub async fn write(&mut self, frame: &Frame) -> Result<(), Error> {
-        write_frame(&mut self.stream, frame).await?;
+        tokio::time::timeout(self.timeouts.write, write_frame(&mut self.stream, frame))
+            .await
+            .map_err(|_| Error::Timeout)??;
         self.last_write = Instant::now();
         Ok(())
     }

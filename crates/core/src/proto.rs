@@ -59,10 +59,14 @@ pub enum Message {
     ///
     /// The sender proves first. See [`AuthOrder`] for why that direction is not
     /// arbitrary.
-    Authenticate { proof: Hash32 },
+    Authenticate {
+        proof: Hash32,
+    },
 
     /// Receiver's nonce, sent before either proof so both transcripts agree.
-    AuthChallenge { nonce: [u8; 32] },
+    AuthChallenge {
+        nonce: [u8; 32],
+    },
 
     SessionBegin {
         role: SessionRole,
@@ -81,12 +85,18 @@ pub enum Message {
     ///
     /// The receiver stays authoritative: its correction always wins, and a sender
     /// that ignores it makes no progress.
-    SessionResume { in_flight: Vec<ResumePoint> },
+    SessionResume {
+        in_flight: Vec<ResumePoint>,
+    },
 
     /// A batch of the manifest exchange (§12.2).
-    HaveQuery { items: Vec<HaveQueryEntry> },
+    HaveQuery {
+        items: Vec<HaveQueryEntry>,
+    },
 
-    HaveResponse { items: Vec<HaveResponseEntry> },
+    HaveResponse {
+        items: Vec<HaveResponseEntry>,
+    },
 
     AssetBegin {
         descriptor: AssetDescriptor,
@@ -97,16 +107,28 @@ pub enum Message {
     },
 
     /// Header for a chunk. The bytes travel in the frame payload, not in JSON.
-    Chunk { offset: u64, hash: Hash32 },
+    Chunk {
+        offset: u64,
+        hash: Hash32,
+    },
 
-    ChunkAck { offset: u64, outcome: ChunkOutcome },
+    ChunkAck {
+        offset: u64,
+        outcome: ChunkOutcome,
+    },
 
-    AssetEnd { full_hash: Hash32 },
+    AssetEnd {
+        full_hash: Hash32,
+    },
 
-    AssetAck { outcome: AssetOutcome },
+    AssetAck {
+        outcome: AssetOutcome,
+    },
 
     /// Checkpoint after an applied batch (§12.3).
-    BatchAck { last_id: u64 },
+    BatchAck {
+        last_id: u64,
+    },
 
     SessionEnd {
         items_done: u64,
@@ -119,7 +141,10 @@ pub enum Message {
 
     /// Orderly refusal. Carries text meant for a log, never for the screen: §20
     /// requires the UI to supply its own wording.
-    Abort { reason: AbortReason, detail: String },
+    Abort {
+        reason: AbortReason,
+        detail: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

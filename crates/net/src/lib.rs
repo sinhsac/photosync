@@ -3,6 +3,7 @@
 //! Separate from `photosync-core` so the engine keeps no dependency on tokio or
 //! rustls and stays testable without a network (`app_info.md` §17).
 
+pub mod discovery;
 pub mod frame;
 pub mod identity;
 pub mod link;

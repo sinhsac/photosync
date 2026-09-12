@@ -1,0 +1,14 @@
+R_DEF: Internal format may change without notice
+local
+drawable ic_launcher
+id code
+id log
+id receive
+id scan
+id scroll
+id selfCheck
+id send
+id status
+layout activity_main
+string app_name
+style Theme.PhotoSync

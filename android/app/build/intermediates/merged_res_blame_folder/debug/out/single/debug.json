@@ -1,0 +1,10 @@
+[
+    {
+        "merged": "app.photosync.app-merged_res-20:/layout_activity_main.xml.flat",
+        "source": "app.photosync.app-main-22:/layout/activity_main.xml"
+    },
+    {
+        "merged": "app.photosync.app-merged_res-20:/drawable_ic_launcher.xml.flat",
+        "source": "app.photosync.app-main-22:/drawable/ic_launcher.xml"
+    }
+]

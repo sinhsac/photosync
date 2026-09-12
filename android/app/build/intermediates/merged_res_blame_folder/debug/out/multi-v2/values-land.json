@@ -1,0 +1,19 @@
+{
+    "logs": [
+        {
+            "outputFile": "app.photosync.app-mergeDebugResources-18:/values-land/values-land.xml",
+            "map": [
+                {
+                    "source": "C:\\Users\\rooter\\.gradle\\caches\\8.9\\transforms\\db27c5bd089331c376114f94e296a307\\transformed\\appcompat-1.6.1\\res\\values-land\\values-land.xml",
+                    "from": {
+                        "startLines": "2,3,4",
+                        "startColumns": "4,4,4",
+                        "startOffsets": "55,125,196",
+                        "endColumns": "69,70,67",
+                        "endOffsets": "120,191,259"
+                    }
+                }
+            ]
+        }
+    ]
+}

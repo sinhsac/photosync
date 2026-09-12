@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PhotoSync</string>
+    <style name="Theme.PhotoSync" parent="Theme.AppCompat.DayNight.NoActionBar"/>
+</resources>

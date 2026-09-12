@@ -1,0 +1,135 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="app.photosync"
+4    android:versionCode="1"
+5    android:versionName="0.1-bringup" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="24"
+9        android:targetSdkVersion="34" />
+10
+11    <!--
+12        §7 discovery and §8 transfer. INTERNET covers both the UDP announce socket
+13        and the TCP callback; there is no narrower permission for LAN sockets on
+14        the API levels this app supports.
+15    -->
+16    <uses-permission android:name="android.permission.INTERNET" />
+16-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:10:5-67
+16-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:10:22-64
+17    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+17-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:11:5-79
+17-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:11:22-76
+18
+19    <!--
+20        Multicast receive is throttled by Wi-Fi power save unless the app holds a
+21        MulticastLock, and that lock needs this permission. Without it the announce
+22        packets of §7.2 arrive erratically or not at all once the screen sleeps.
+23    -->
+24    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+24-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:18:5-86
+24-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:18:22-83
+25
+26    <!--
+27        Reading the library (§10.3). The media permissions only exist from API 33;
+28        before that READ_EXTERNAL_STORAGE is the one that grants it, and from 33 it
+29        no longer grants media at all — hence the split.
+30    -->
+31    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+31-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:25:5-76
+31-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:25:22-73
+32    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+32-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:26:5-75
+32-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:26:22-72
+33    <uses-permission
+33-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:27:5-29:38
+34        android:name="android.permission.READ_EXTERNAL_STORAGE"
+34-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:28:9-64
+35        android:maxSdkVersion="32" />
+35-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:29:9-35
+36
+37    <!--
+38        Writing is scoped to our own MediaStore inserts (§10.4), which needs no
+39        permission from API 29 on. Only the pre-29 path needs this, so it is capped.
+40    -->
+41    <uses-permission
+41-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:35:5-37:38
+42        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+42-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:36:9-65
+43        android:maxSdkVersion="28" />
+43-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:37:9-35
+44
+45    <permission
+45-->[androidx.core:core:1.9.0] C:\Users\rooter\.gradle\caches\8.9\transforms\2043b2902d31fec2fef4f68313d21fc5\transformed\core-1.9.0\AndroidManifest.xml:22:5-24:47
+46        android:name="app.photosync.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+46-->[androidx.core:core:1.9.0] C:\Users\rooter\.gradle\caches\8.9\transforms\2043b2902d31fec2fef4f68313d21fc5\transformed\core-1.9.0\AndroidManifest.xml:23:9-81
+47        android:protectionLevel="signature" />
+47-->[androidx.core:core:1.9.0] C:\Users\rooter\.gradle\caches\8.9\transforms\2043b2902d31fec2fef4f68313d21fc5\transformed\core-1.9.0\AndroidManifest.xml:24:9-44
+48
+49    <uses-permission android:name="app.photosync.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+49-->[androidx.core:core:1.9.0] C:\Users\rooter\.gradle\caches\8.9\transforms\2043b2902d31fec2fef4f68313d21fc5\transformed\core-1.9.0\AndroidManifest.xml:26:5-97
+49-->[androidx.core:core:1.9.0] C:\Users\rooter\.gradle\caches\8.9\transforms\2043b2902d31fec2fef4f68313d21fc5\transformed\core-1.9.0\AndroidManifest.xml:26:22-94
+50
+51    <application
+51-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:39:5-58:19
+52        android:allowBackup="false"
+52-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:40:9-36
+53        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+53-->[androidx.core:core:1.9.0] C:\Users\rooter\.gradle\caches\8.9\transforms\2043b2902d31fec2fef4f68313d21fc5\transformed\core-1.9.0\AndroidManifest.xml:28:18-86
+54        android:debuggable="true"
+55        android:extractNativeLibs="true"
+56        android:icon="@drawable/ic_launcher"
+56-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:41:9-45
+57        android:label="@string/app_name"
+57-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:42:9-41
+58        android:supportsRtl="true"
+58-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:43:9-35
+59        android:theme="@style/Theme.PhotoSync" >
+59-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:44:9-47
+60        <activity
+60-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:47:9-57:20
+61            android:name="app.photosync.MainActivity"
+61-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:48:13-41
+62            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+62-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:49:13-81
+63            android:exported="true"
+63-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:50:13-36
+64            android:label="@string/app_name"
+64-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:51:13-45
+65            android:windowSoftInputMode="adjustResize" >
+65-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:52:13-55
+66            <intent-filter>
+66-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:53:13-56:29
+67                <action android:name="android.intent.action.MAIN" />
+67-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:54:17-69
+67-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:54:25-66
+68
+69                <category android:name="android.intent.category.LAUNCHER" />
+69-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:55:17-77
+69-->D:\001.Sac\projects\photosync\android\app\src\main\AndroidManifest.xml:55:27-74
+70            </intent-filter>
+71        </activity>
+72
+73        <provider
+73-->[androidx.emoji2:emoji2:1.2.0] C:\Users\rooter\.gradle\caches\8.9\transforms\7d07ef3f1eb40893612a61eeb340bbc8\transformed\emoji2-1.2.0\AndroidManifest.xml:24:9-32:20
+74            android:name="androidx.startup.InitializationProvider"
+74-->[androidx.emoji2:emoji2:1.2.0] C:\Users\rooter\.gradle\caches\8.9\transforms\7d07ef3f1eb40893612a61eeb340bbc8\transformed\emoji2-1.2.0\AndroidManifest.xml:25:13-67
+75            android:authorities="app.photosync.androidx-startup"
+75-->[androidx.emoji2:emoji2:1.2.0] C:\Users\rooter\.gradle\caches\8.9\transforms\7d07ef3f1eb40893612a61eeb340bbc8\transformed\emoji2-1.2.0\AndroidManifest.xml:26:13-68
+76            android:exported="false" >
+76-->[androidx.emoji2:emoji2:1.2.0] C:\Users\rooter\.gradle\caches\8.9\transforms\7d07ef3f1eb40893612a61eeb340bbc8\transformed\emoji2-1.2.0\AndroidManifest.xml:27:13-37
+77            <meta-data
+77-->[androidx.emoji2:emoji2:1.2.0] C:\Users\rooter\.gradle\caches\8.9\transforms\7d07ef3f1eb40893612a61eeb340bbc8\transformed\emoji2-1.2.0\AndroidManifest.xml:29:13-31:52
+78                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+78-->[androidx.emoji2:emoji2:1.2.0] C:\Users\rooter\.gradle\caches\8.9\transforms\7d07ef3f1eb40893612a61eeb340bbc8\transformed\emoji2-1.2.0\AndroidManifest.xml:30:17-75
+79                android:value="androidx.startup" />
+79-->[androidx.emoji2:emoji2:1.2.0] C:\Users\rooter\.gradle\caches\8.9\transforms\7d07ef3f1eb40893612a61eeb340bbc8\transformed\emoji2-1.2.0\AndroidManifest.xml:31:17-49
+80            <meta-data
+80-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\rooter\.gradle\caches\8.9\transforms\5f54756ac31de3e4e23a8191b7e87c21\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:31:13-33:52
+81                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+81-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\rooter\.gradle\caches\8.9\transforms\5f54756ac31de3e4e23a8191b7e87c21\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:32:17-78
+82                android:value="androidx.startup" />
+82-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\rooter\.gradle\caches\8.9\transforms\5f54756ac31de3e4e23a8191b7e87c21\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:33:17-49
+83        </provider>
+84    </application>
+85
+86</manifest>

@@ -1,0 +1,19 @@
+[package]
+name = "photosync-net"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+photosync-core = { path = "../core" }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+rusqlite.workspace = true
+# ring rather than aws-lc-rs: it cross-compiles to all Android ABIs and iOS
+# without extra toolchain setup, which matters more here than raw speed.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "time", "sync"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+tracing.workspace = true

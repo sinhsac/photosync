@@ -1,0 +1,15 @@
+[package]
+name = "photosync-ffi"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "photosync"
+# cdylib is what Android and iOS load. staticlib is kept so an iOS build can
+# link it into the app binary instead, which App Store review prefers.
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+photosync-core = { path = "../core" }

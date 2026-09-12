@@ -1,0 +1,8 @@
+/target
+/jniLibs
+*.db
+*.db-wal
+*.db-shm
+*.log
+/devdata
+referer/*
